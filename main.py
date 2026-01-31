@@ -477,11 +477,11 @@ async def honeypot_get(req: Request):
     }
 
 
-@app.post("/honeypot", response_model=HoneypotResponse)
+@app.post("/honeypot")
 async def honeypot_endpoint(
-    request: HoneypotRequest,
     background_tasks: BackgroundTasks,
     req: Request,
+    request: Optional[HoneypotRequest] = None,
 ):
     """Main honeypot API endpoint"""
     
@@ -494,6 +494,14 @@ async def honeypot_endpoint(
     if api_key != expected:
         logger.warning("Unauthorized: Invalid API key (lengths: got %s, expected %s)", len(api_key), len(expected))
         raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    # Step 1.5: Handle validation-only requests (GUVI tester sends POST with no body)
+    if request is None:
+        logger.info("📋 Validation-only request received (no body) - returning success")
+        return HoneypotResponse(
+            status="success",
+            reply="Honeypot endpoint validated successfully."
+        )
     
     # Step 2: Extract request data
     session_id = request.sessionId
