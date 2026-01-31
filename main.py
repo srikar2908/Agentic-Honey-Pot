@@ -1,6 +1,8 @@
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict
 import os
 import re
@@ -30,6 +32,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Debug: Log raw request body for 422 errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    try:
+        body = await request.json()
+        logger.error(f"❌ 422 Validation Error. Incoming Body: {body}")
+    except:
+        logger.error("❌ 422 Validation Error. Could not parse body.")
+    
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": body if 'body' in locals() else "Unparseable"}
+    )
+
 # API Keys - Load from environment variables
 HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY", "your-secret-honeypot-key-12345")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")  # Set this in .env file
@@ -41,22 +57,28 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # In-memory session storage (use Redis in production)
 sessions: Dict[str, dict] = {}
 
-# Pydantic Models
+# Pydantic Models with flexible configuration
 class Message(BaseModel):
     sender: str
     text: str
-    timestamp: str
+    timestamp: Optional[str] = None # Make timestamp optional as it's not critical
+    
+    model_config = ConfigDict(populate_by_name=True)
 
 class Metadata(BaseModel):
     channel: Optional[str] = "SMS"
     language: Optional[str] = "English"
     locale: Optional[str] = "IN"
+    
+    model_config = ConfigDict(populate_by_name=True)
 
 class HoneypotRequest(BaseModel):
-    sessionId: str
+    sessionId: str = Field(..., alias="session_id") # Allow session_id too
     message: Message
-    conversationHistory: List[Message] = []
+    conversationHistory: List[Message] = Field(default=[], alias="conversation_history") # Allow snake_case
     metadata: Optional[Metadata] = None
+    
+    model_config = ConfigDict(populate_by_name=True)
 
 class HoneypotResponse(BaseModel):
     status: str
