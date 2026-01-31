@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: agentic-honeypot-api
+    env: python
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.7
+      - key: HONEYPOT_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
