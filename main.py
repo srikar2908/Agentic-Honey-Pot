@@ -23,14 +23,16 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Agentic Honeypot API", version="1.0.0")
 
-# CORS middleware
-# CORS middleware - Allow all origins with credentials support
+# CORS middleware - Allow all origins (required for GUVI tester)
+# Note: allow_credentials=True cannot be used with wildcard origins
+# The API key authentication provides security, not credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex="https?://.*",  # Allow any http/https origin
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow any origin
+    allow_credentials=False,  # Must be False when using wildcard origins
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Debug: Log raw request body for 422 errors
