@@ -178,7 +178,7 @@ class IntelligenceExtractor:
     """Extract scam intelligence from messages"""
     
     PATTERNS = {
-        "bank_account": r'\b\d{9,18}\b',
+        "bank_account": r'\b\d{12,18}\b',  # Bank accounts: 12-18 digits (not 9-11 to avoid phone numbers)
         "ifsc_code": r'\b[A-Z]{4}0[A-Z0-9]{6}\b',
         "upi_id": r'\b[\w\.\-]+@[\w\.\-]+\b',
         "phone_india": r'(?:\+91[\s-]?)?[6-9]\d{9}\b',
@@ -190,19 +190,35 @@ class IntelligenceExtractor:
     def extract(text: str, intelligence: dict):
         """Extract all intelligence from text"""
         
-        # Bank accounts (9-18 digits)
-        bank_accounts = re.findall(IntelligenceExtractor.PATTERNS["bank_account"], text)
-        intelligence["bankAccounts"].extend(bank_accounts)
-        
-        # UPI IDs
-        potential_upis = re.findall(IntelligenceExtractor.PATTERNS["upi_id"], text)
-        # Filter to ensure it's actually UPI format (something@something)
-        upis = [u for u in potential_upis if '@' in u and len(u.split('@')[0]) > 2]
-        intelligence["upiIds"].extend(upis)
-        
-        # Phone numbers
+        # Phone numbers (extract first to avoid confusion with bank accounts)
         phones = re.findall(IntelligenceExtractor.PATTERNS["phone_india"], text)
         intelligence["phoneNumbers"].extend(phones)
+        
+        # Bank accounts (12-18 digits, excluding phone numbers)
+        all_numbers = re.findall(IntelligenceExtractor.PATTERNS["bank_account"], text)
+        # Filter out phone numbers (10 digits)
+        bank_accounts = [num for num in all_numbers if len(num.replace('+', '').replace('-', '').replace(' ', '')) >= 12]
+        intelligence["bankAccounts"].extend(bank_accounts)
+        
+        # Emails (proper email format with TLD)
+        emails = re.findall(IntelligenceExtractor.PATTERNS["email"], text)
+        intelligence["emails"].extend(emails)
+        
+        # UPI IDs (username@bank format, excluding proper emails)
+        potential_upis = re.findall(IntelligenceExtractor.PATTERNS["upi_id"], text)
+        # Filter: must have @, length > 2 before @, and NOT a proper email (no .com/.in etc)
+        upis = []
+        for u in potential_upis:
+            if '@' in u and len(u.split('@')[0]) > 2:
+                # Check if it's NOT a proper email (no TLD like .com, .in, .org)
+                domain = u.split('@')[1] if len(u.split('@')) > 1 else ''
+                if '.' not in domain or not any(domain.endswith(tld) for tld in ['.com', '.in', '.org', '.net', '.co']):
+                    upis.append(u)
+                else:
+                    # It's a proper email, not UPI
+                    if u not in intelligence["emails"]:
+                        intelligence["emails"].append(u)
+        intelligence["upiIds"].extend(upis)
         
         # URLs/Links
         urls = re.findall(IntelligenceExtractor.PATTERNS["url"], text)
@@ -553,6 +569,7 @@ async def honeypot_endpoint(
             "intelligence": {
                 "bankAccounts": [],
                 "upiIds": [],
+                "emails": [],  # Added emails field
                 "phishingLinks": [],
                 "phoneNumbers": [],
                 "suspiciousKeywords": []
