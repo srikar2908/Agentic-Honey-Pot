@@ -3,7 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Union
 import os
 import re
 import requests
@@ -66,7 +66,7 @@ sessions: Dict[str, dict] = {}
 class Message(BaseModel):
     sender: str
     text: str
-    timestamp: Optional[str] = None # Make timestamp optional as it's not critical
+    timestamp: Optional[Union[str, int]] = None  # Accept both string and int timestamps
     
     model_config = ConfigDict(populate_by_name=True)
 
