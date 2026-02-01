@@ -2,7 +2,7 @@ from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict, AliasChoices, ValidationError
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices, ValidationError, field_validator
 from typing import List, Optional, Dict, Tuple, Union
 import os
 import re
@@ -62,22 +62,22 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # In-memory session storage (use Redis in production)
 sessions: Dict[str, dict] = {}
 
-# Pydantic Models with flexible configuration
-from pydantic import BaseModel, Field, ConfigDict, AliasChoices, field_validator
-
+# Pydantic Models — GUVI spec (camelCase, optional fields, extra ignored)
 class Message(BaseModel):
-    sender: str = Field(validation_alias=AliasChoices("sender", "role", "from"))
-    text: str = Field(validation_alias=AliasChoices("text", "content", "body"))
+    """Per GUVI spec: sender (scammer|user), text, timestamp (ISO-8601 optional)."""
+    sender: str = Field(default="scammer", validation_alias=AliasChoices("sender", "role", "from"))
+    text: str = Field(..., validation_alias=AliasChoices("text", "content", "body"))
     timestamp: Optional[Union[str, int]] = None
     
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 class Metadata(BaseModel):
+    """Per GUVI spec: channel, language, locale (all optional)."""
     channel: Optional[str] = "SMS"
     language: Optional[str] = "English"
     locale: Optional[str] = "IN"
     
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 class HoneypotRequest(BaseModel):
     """Request body per GUVI spec: camelCase keys (sessionId, message, conversationHistory, metadata)."""
@@ -94,13 +94,17 @@ class HoneypotRequest(BaseModel):
     def parse_conversation_history(cls, v):
         if v is None:
             return []
-        return v
+        if isinstance(v, list):
+            return v
+        return []
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 class HoneypotResponse(BaseModel):
-    status: str
-    reply: str
+    """Per GUVI spec: agent output { status, reply } only."""
+    status: str = "success"
+    reply: str = ""
+    model_config = ConfigDict(extra="forbid")
 
 # ==================== SCAM DETECTION MODULE ====================
 
@@ -533,6 +537,11 @@ def _get_api_key_from_request(request: Request) -> Tuple[Optional[str], str]:
     return None, "Missing x-api-key header (or Authorization: Bearer <key>)"
 
 
+def _spec_response(reply: str = "Endpoint validated.") -> dict:
+    """Exact GUVI spec: { status, reply } only."""
+    return {"status": "success", "reply": reply}
+
+
 @app.options("/honeypot", response_model=None)
 async def honeypot_options():
     """
@@ -562,8 +571,7 @@ async def honeypot_get(req: Request):
     expected = (HONEYPOT_API_KEY or "").strip()
     if api_key != expected:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    # Spec: agent output is only status + reply (no extra "message" key)
-    return {"status": "success", "reply": "Endpoint validated."}
+    return _spec_response("Endpoint validated.")
 
 
 @app.post("/honeypot", response_model=HoneypotResponse)
@@ -571,7 +579,7 @@ async def honeypot_endpoint(
     background_tasks: BackgroundTasks,
     req: Request,
 ):
-    """Main honeypot API endpoint. Accepts invalid body without 422 so GUVI tester does not show INVALID_REQUEST_BODY."""
+    """Main honeypot API endpoint. Never returns 422/500 so GUVI tester never shows INVALID_REQUEST_BODY."""
     
     # Step 1: Authentication (accept x-api-key or Authorization: Bearer)
     api_key, auth_error = _get_api_key_from_request(req)
@@ -583,94 +591,94 @@ async def honeypot_endpoint(
         logger.warning("Unauthorized: Invalid API key (lengths: got %s, expected %s)", len(api_key), len(expected))
         raise HTTPException(status_code=401, detail="Invalid API key")
     
-    # Step 1.5: Parse body manually — on invalid body return 200 + {status, reply} so GUVI tester does not show INVALID_REQUEST_BODY
+    # Step 1.5: Parse body — never raise; empty/invalid JSON or wrong shape => 200 + spec response
     try:
         body = await req.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
     try:
         request_data = HoneypotRequest.model_validate(body)
-    except ValidationError:
+    except (ValidationError, TypeError, ValueError):
         logger.info("Invalid request body (GUVI sanity check or malformed). Returning 200 with spec format.")
-        return {"status": "success", "reply": "Endpoint validated."}
+        return _spec_response()
     
-    # Data extraction
-    session_id = request_data.sessionId
-    scammer_message = request_data.message.text
-    conversation_history = request_data.conversationHistory
+    try:
+        # Data extraction
+        session_id = request_data.sessionId
+        scammer_message = request_data.message.text
+        conversation_history = request_data.conversationHistory or []
 
-    # Step 2: Use extracted data
-    if not session_id:
-        return {"status": "success", "reply": "Please send a message with sessionId and message text."}
-    
-    logger.info(f"📨 Received message for session {session_id}: {scammer_message}")
-    
-    # Step 3: Initialize or retrieve session
-    if session_id not in sessions:
-        sessions[session_id] = {
-            "scam_detected": False,
-            "scam_score": 0,
-            "messages": [],
-            "intelligence": {
-                "bankAccounts": [],
-                "upiIds": [],
-                "phishingLinks": [],
-                "phoneNumbers": [],
-                "suspiciousKeywords": []
-            },
-            "turn_count": 0,
-            "reported": False
-        }
-        logger.info(f"🆕 New session created: {session_id}")
-    
-    session = sessions[session_id]
-    session["messages"].append(scammer_message)
-    session["turn_count"] += 1
-    
-    # Step 4: Scam Detection
-    if not session["scam_detected"]:
-        is_scam, scam_score = ScamDetector.detect_scam(
-            scammer_message,
-            conversation_history
-        )
-        session["scam_detected"] = is_scam
-        session["scam_score"] = scam_score
+        if not session_id or not (scammer_message or "").strip():
+            return _spec_response("Please send a message with sessionId and message text.")
         
-        if is_scam:
-            logger.info(f"🚨 SCAM DETECTED in session {session_id} (Score: {scam_score})")
-    
-    # Step 5: Extract Intelligence
-    IntelligenceExtractor.extract(scammer_message, session["intelligence"])
-    
-    # Step 6: Generate AI Agent Response
-    agent_reply = HoneypotAgent.generate_response(
-        latest_message=scammer_message,
-        conversation_history=conversation_history,
-        scam_detected=session["scam_detected"],
-        turn_count=session["turn_count"]
-    )
-    
-    # Step 7: Check if conversation should end
-    should_end = ConversationManager.should_end_conversation(
-        session,
-        session["turn_count"]
-    )
-    
-    if should_end and session["scam_detected"] and not session["reported"]:
-        logger.info(f"🏁 Ending conversation for session {session_id}")
-        session["reported"] = True
-        # Send final report in background
-        background_tasks.add_task(
-            ConversationManager.send_final_report,
-            session_id,
-            session
+        logger.info(f"📨 Received message for session {session_id}: {scammer_message}")
+        
+        # Step 3: Initialize or retrieve session
+        if session_id not in sessions:
+            sessions[session_id] = {
+                "scam_detected": False,
+                "scam_score": 0,
+                "messages": [],
+                "intelligence": {
+                    "bankAccounts": [],
+                    "upiIds": [],
+                    "phishingLinks": [],
+                    "phoneNumbers": [],
+                    "suspiciousKeywords": []
+                },
+                "turn_count": 0,
+                "reported": False
+            }
+            logger.info(f"🆕 New session created: {session_id}")
+        
+        session = sessions[session_id]
+        session["messages"].append(scammer_message)
+        session["turn_count"] += 1
+        
+        # Step 4: Scam Detection
+        if not session["scam_detected"]:
+            is_scam, scam_score = ScamDetector.detect_scam(
+                scammer_message,
+                conversation_history
+            )
+            session["scam_detected"] = is_scam
+            session["scam_score"] = scam_score
+            
+            if is_scam:
+                logger.info(f"🚨 SCAM DETECTED in session {session_id} (Score: {scam_score})")
+        
+        # Step 5: Extract Intelligence
+        IntelligenceExtractor.extract(scammer_message, session["intelligence"])
+        
+        # Step 6: Generate AI Agent Response
+        agent_reply = HoneypotAgent.generate_response(
+            latest_message=scammer_message,
+            conversation_history=conversation_history,
+            scam_detected=session["scam_detected"],
+            turn_count=session["turn_count"]
         )
-    
-    # Step 8: Return response (plain dict to ensure exact GUVI spec format)
-    return {
-        "status": "success",
-        "reply": agent_reply
-    }
+        
+        # Step 7: Check if conversation should end
+        should_end = ConversationManager.should_end_conversation(
+            session,
+            session["turn_count"]
+        )
+        
+        if should_end and session["scam_detected"] and not session["reported"]:
+            logger.info(f"🏁 Ending conversation for session {session_id}")
+            session["reported"] = True
+            background_tasks.add_task(
+                ConversationManager.send_final_report,
+                session_id,
+                session
+            )
+        
+        return _spec_response(agent_reply)
+    except Exception as e:
+        logger.exception("Honeypot processing error: %s", e)
+        return _spec_response()
 
 # ==================== HEALTH CHECK ENDPOINT ====================
 
