@@ -524,7 +524,7 @@ def _get_api_key_from_request(request: Request) -> Tuple[Optional[str], str]:
     return None, "Missing x-api-key header (or Authorization: Bearer <key>)"
 
 
-@app.options("/honeypot")
+@app.options("/honeypot", response_model=None)
 async def honeypot_options():
     """
     OPTIONS /honeypot — Handle CORS preflight requests from GUVI tester.
@@ -541,7 +541,7 @@ async def honeypot_options():
     )
 
 
-@app.get("/honeypot")
+@app.get("/honeypot", response_model=HoneypotResponse)
 async def honeypot_get(req: Request):
     """
     GET /honeypot — for GUVI API Endpoint Tester.
@@ -557,7 +557,7 @@ async def honeypot_get(req: Request):
     return {"status": "success", "reply": "Endpoint validated."}
 
 
-@app.post("/honeypot")
+@app.post("/honeypot", response_model=HoneypotResponse)
 async def honeypot_endpoint(
     background_tasks: BackgroundTasks,
     req: Request,
