@@ -557,6 +557,8 @@ async def honeypot_endpoint(
     # Step 1.5: Read request body manually to handle empty body
     try:
         body = await req.body()
+        logger.info(f"🔍 RAW BODY RECEIVED: {body[:500]}")  # Log first 500 bytes
+        
         if not body or body == b'':
             logger.info("📋 Validation-only request (empty body) - GUVI tester")
             return {
@@ -566,9 +568,11 @@ async def honeypot_endpoint(
         
         # Parse JSON from body bytes (don't call req.json() after req.body())
         request_data = json.loads(body.decode('utf-8'))
+        logger.info(f"🔍 PARSED JSON: {json.dumps(request_data, indent=2)}")
         
     except json.JSONDecodeError as je:
         logger.error(f"❌ Invalid JSON in request body: {str(je)}")
+        logger.error(f"Body was: {body[:500]}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(je)}")
     
     # Handle empty JSON or validation-only requests
@@ -582,7 +586,8 @@ async def honeypot_endpoint(
     # Check if this is a valid honeypot request
     # GUVI tester might send {"name": "..."} which is NOT a honeypot request
     if "sessionId" not in request_data and "session_id" not in request_data:
-        logger.info(f"📋 Validation-only request (no sessionId) - GUVI tester: {request_data}")
+        logger.info(f"📋 Validation-only request (no sessionId) - GUVI tester")
+        logger.info(f"Request keys: {list(request_data.keys())}")
         return {
             "status": "success",
             "reply": "Honeypot endpoint validated successfully."
@@ -591,11 +596,22 @@ async def honeypot_endpoint(
     # Parse and validate the honeypot request
     # Let Pydantic validation errors propagate - they'll return proper 422 responses
     try:
+        logger.info(f"🔍 Attempting Pydantic validation...")
         honeypot_request = HoneypotRequest(**request_data)
+        logger.info(f"✅ Pydantic validation successful")
     except Exception as e:
         logger.error(f"❌ Pydantic validation error: {str(e)}")
-        logger.error(f"Request data received: {request_data}")
-        raise  # Re-raise to let FastAPI handle it properly
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        logger.error(f"❌ Request data received: {json.dumps(request_data, indent=2)}")
+        # Return detailed error to help debug
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Validation failed",
+                "message": str(e),
+                "received_data": request_data
+            }
+        )
     
     # Step 2: Extract request data
     session_id = honeypot_request.sessionId
