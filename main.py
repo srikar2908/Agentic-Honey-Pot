@@ -230,17 +230,17 @@ class IntelligenceExtractor:
     # IFSC codes (correct RBI format)
     "ifsc_code": r'\b[A-Z]{4}0[A-Z0-9]{6}\b',
 
-    # UPI IDs - catch ANY @domain format (not just specific banks)
-    "upi_id": r'(?:upiId|upi)[\s:=-]*([a-zA-Z0-9.\-_]{2,}@[a-zA-Z0-9\-_.]+)|\b([a-zA-Z0-9.\-_]{3,}@(?:okaxis|oksbi|okhdfc|okicici|paytm|upi|ybl|ibl|axl|apl|fakebank|bank)[a-zA-Z0-9]*)\b',
+    # UPI IDs - catch ANY @domain format
+    "upi_id": r'(?:upiId|upi|UPI)[\s:=-]*([a-zA-Z0-9.\-_]{2,}@[a-zA-Z0-9\-_.]+)|([a-zA-Z0-9.\-_]{3,}@(?:okaxis|oksbi|okhdfc|okicici|paytm|upi|ybl|ibl|axl|apl|fakebank|bank)[a-zA-Z0-9]*)',
 
-    # Indian phone numbers (SMS + WhatsApp style)
-    "phone_india": r'(?:phoneNumber|phone|contact|helpline)[\s:=-]*(\+?91[\s-]?[6-9]\d{9})|\b(\+?91[\s-]?[6-9]\d{2}[\s-]?\d{3}[\s-]?\d{4})\b',
+    # Indian phone numbers - handles parentheses and various formats
+    "phone_india": r'(?:phoneNumber|phone|contact|helpline|line)[\s:=-]*\(?\+?91[\s-]?[6-9]\d{9}\)?|\(?\+?91[\s-]?[6-9]\d{2}[\s-]?\d{3}[\s-]?\d{4}\)?',
 
     # URLs including shorteners
     "url": r'\b(?:https?:\/\/|www\.)[^\s<>"]+|(?:bit\.ly|tinyurl\.com|t\.co|goo\.gl|rb\.gy)\/[^\s<>"]+',
 
-    # Email
-    "email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+    # Email - broader pattern to catch @fakebank
+    "email": r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+(?:\.[A-Za-z]{2,}|[A-Za-z]+)'
 }
 
     
@@ -248,13 +248,12 @@ class IntelligenceExtractor:
     def extract(text: str, intelligence: dict):
         """Extract all intelligence from text"""
         
-        # Phone numbers - extract with improved pattern
+        # Phone numbers - extract with improved pattern (handles parentheses)
         phone_matches = re.findall(IntelligenceExtractor.PATTERNS["phone_india"], text, re.IGNORECASE)
-        for match in phone_matches:
-            phone = match[0] if match[0] else match[1]
+        for phone in phone_matches:
             if phone:
-                # Clean and normalize
-                phone = re.sub(r'[\s-]', '', phone)
+                # Clean parentheses, spaces, dashes
+                phone = re.sub(r'[\s\-()]+', '', phone)
                 if not phone.startswith('+'):
                     phone = '+' + phone if phone.startswith('91') else '+91' + phone
                 intelligence["phoneNumbers"].append(phone)
@@ -275,10 +274,15 @@ class IntelligenceExtractor:
             upi = match[0] if match[0] else match[1]
             if upi and '@' in upi:
                 intelligence["upiIds"].append(upi)
+                # Also add to emails for comprehensive extraction
+                if upi not in intelligence["emails"]:
+                    intelligence["emails"].append(upi)
         
-        # Emails
-        emails = re.findall(IntelligenceExtractor.PATTERNS["email"], text)
-        intelligence["emails"].extend([e for e in emails if e not in intelligence["upiIds"]])
+        # Emails - broader pattern
+        emails = re.findall(IntelligenceExtractor.PATTERNS["email"], text, re.IGNORECASE)
+        for email in emails:
+            if email and email not in intelligence["emails"]:
+                intelligence["emails"].append(email)
         
         # URLs/Links
         urls = re.findall(IntelligenceExtractor.PATTERNS["url"], text)
@@ -293,7 +297,7 @@ class IntelligenceExtractor:
         for key in intelligence:
             intelligence[key] = list(set(intelligence[key]))
         
-        logger.info(f"Extracted: Bank={len(intelligence['bankAccounts'])}, UPI={len(intelligence['upiIds'])}, Phone={len(intelligence['phoneNumbers'])}")
+        logger.info(f"Extracted: Bank={len(intelligence['bankAccounts'])}, UPI={len(intelligence['upiIds'])}, Phone={len(intelligence['phoneNumbers'])}, Email={len(intelligence['emails'])}"))
 
 # ==================== AI AGENT MODULE ====================
 
