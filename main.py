@@ -300,32 +300,20 @@ class IntelligenceExtractor:
 class HoneypotAgent:
     """Autonomous AI agent using Groq for fast inference"""
     
-    PERSONA_TEMPLATE = """You are a worried middle-class Indian (age 40) who received a suspicious message. Extract scam details WITHOUT revealing you know it's a scam.
+    PERSONA_TEMPLATE = """Worried Indian person (40s). Extract scam info WITHOUT revealing awareness.
 
-RULES:
-1. NEVER reveal scam awareness
-2. NEVER share real personal data
-3. Reply in 1-2 SHORT sentences only
-4. Use natural English + occasional Hindi ("kyon", "haan", "thoda")
-5. Sound confused, worried, polite - NOT investigative
+RULES: 1) NEVER reveal scam detection 2) 1-2 SHORT sentences ONLY 3) Sound confused/worried 4) Pure English
 
-STRATEGY (by turn count):
-Turns 1-3: Ask basic "why/which/how" questions
-Turns 4-7: Request callback numbers, links, official verification
-Turns 8+: Express doubt, ask for more proof, delay tactics
+Turns 1-3: Ask why/which/how
+Turns 4-7: Request numbers/links
+Turns 8+: Doubt/delay
 
-EXTRACT (subtly):
-- Bank names, account numbers, IFSC
-- UPI IDs, phone numbers
-- URLs, claimed organizations
-
-CONVERSATION:
+Last 3 messages:
 {conversation_history}
 
-LATEST MESSAGE:
-{latest_message}
+New: {latest_message}
 
-REPLY (1-2 sentences, natural, human):"""
+Reply (brief, human):"""
 
     @staticmethod
     def generate_response(
@@ -336,44 +324,30 @@ REPLY (1-2 sentences, natural, human):"""
     ) -> str:
         """Generate AI agent response using Groq"""
         
-        # Build conversation context
+        # Build conversation context - ONLY last 3 messages to save tokens
         history_text = ""
-        for msg in conversation_history:
+        for msg in conversation_history[-3:]:
             sender_label = "Them" if msg.sender == "scammer" else "You"
             history_text += f"{sender_label}: {msg.text}\n"
         
         # Create prompt
         prompt = HoneypotAgent.PERSONA_TEMPLATE.format(
-            conversation_history=history_text if history_text else "This is the first message.",
+            conversation_history=history_text if history_text else "First message.",
             latest_message=latest_message
         )
-        
-        # Adjust strategy based on turn count
-        if turn_count < 3:
-            additional_instruction = "\nYou're just starting to understand what's happening. Show confusion and ask basic questions."
-        elif turn_count < 7:
-            additional_instruction = "\nYou're getting more concerned. Ask for specific details to 'verify' their legitimacy."
-        else:
-            additional_instruction = "\nYou're deeply worried. Ask for final details like account numbers, links, or contact information."
-        
-        prompt += additional_instruction
         
         try:
             # Use Groq for ultra-fast inference
             chat_completion = groq_client.chat.completions.create(
                 messages=[
                     {
-                        "role": "system",
-                        "content": "You are an expert at realistic human conversation simulation. Stay in character perfectly."
-                    },
-                    {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                model="llama-3.3-70b-versatile",  # Best balance of quality and speed
-                temperature=0.8,  # More natural/varied responses
-                max_tokens=100,  # Keep responses brief
+                model="llama-3.3-70b-versatile",
+                temperature=0.7,
+                max_tokens=50,  # Reduced from 100
                 top_p=0.9
             )
             
@@ -557,52 +531,39 @@ async def honeypot_endpoint(
     # Step 1.5: Read request body manually to handle empty body
     try:
         body = await req.body()
-        logger.info(f"🔍 RAW BODY RECEIVED: {body[:500]}")  # Log first 500 bytes
         
         if not body or body == b'':
-            logger.info("📋 Validation-only request (empty body) - GUVI tester")
             return {
                 "status": "success",
                 "reply": "Honeypot endpoint validated successfully."
             }
         
-        # Parse JSON from body bytes (don't call req.json() after req.body())
+        # Parse JSON from body bytes
         request_data = json.loads(body.decode('utf-8'))
-        logger.info(f"🔍 PARSED JSON: {json.dumps(request_data, indent=2)}")
         
     except json.JSONDecodeError as je:
-        logger.error(f"❌ Invalid JSON in request body: {str(je)}")
-        logger.error(f"Body was: {body[:500]}")
+        logger.error(f"Invalid JSON: {str(je)}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(je)}")
     
     # Handle empty JSON or validation-only requests
     if not request_data or request_data == {}:
-        logger.info("📋 Validation-only request (empty JSON) - GUVI tester")
         return {
             "status": "success",
             "reply": "Honeypot endpoint validated successfully."
         }
     
     # Check if this is a valid honeypot request
-    # GUVI tester might send {"name": "..."} which is NOT a honeypot request
     if "sessionId" not in request_data and "session_id" not in request_data:
-        logger.info(f"📋 Validation-only request (no sessionId) - GUVI tester")
-        logger.info(f"Request keys: {list(request_data.keys())}")
         return {
             "status": "success",
             "reply": "Honeypot endpoint validated successfully."
         }
     
     # Parse and validate the honeypot request
-    # Let Pydantic validation errors propagate - they'll return proper 422 responses
     try:
-        logger.info(f"🔍 Attempting Pydantic validation...")
         honeypot_request = HoneypotRequest(**request_data)
-        logger.info(f"✅ Pydantic validation successful")
     except Exception as e:
-        logger.error(f"❌ Pydantic validation error: {str(e)}")
-        logger.error(f"❌ Error type: {type(e).__name__}")
-        logger.error(f"❌ Request data received: {json.dumps(request_data, indent=2)}")
+        logger.error(f"Validation error: {str(e)}")
         # Return detailed error to help debug
         raise HTTPException(
             status_code=422,
