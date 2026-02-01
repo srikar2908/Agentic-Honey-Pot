@@ -657,36 +657,36 @@ async def honeypot_endpoint(
         
         # Parse JSON from body bytes (don't call req.json() after req.body())
         request_data = json.loads(body.decode('utf-8'))
-        if not request_data or request_data == {}:
-            logger.info("📋 Validation-only request (empty JSON) - GUVI tester")
-            return {
-                "status": "success",
-                "reply": "Honeypot endpoint validated successfully."
-            }
         
-        # Check if this is a valid honeypot request
-        # GUVI tester might send {"name": "..."} which is NOT a honeypot request
-        if "sessionId" not in request_data and "session_id" not in request_data:
-            logger.info(f"📋 Validation-only request (no sessionId) - GUVI tester: {request_data}")
-            return {
-                "status": "success",
-                "reply": "Honeypot endpoint validated successfully."
-            }
-            
-        honeypot_request = HoneypotRequest(**request_data)
     except json.JSONDecodeError as je:
-        logger.info(f"📋 Validation-only request (invalid JSON) - GUVI tester: {str(je)}")
+        logger.error(f"❌ Invalid JSON in request body: {str(je)}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(je)}")
+    
+    # Handle empty JSON or validation-only requests
+    if not request_data or request_data == {}:
+        logger.info("📋 Validation-only request (empty JSON) - GUVI tester")
         return {
             "status": "success",
             "reply": "Honeypot endpoint validated successfully."
         }
+    
+    # Check if this is a valid honeypot request
+    # GUVI tester might send {"name": "..."} which is NOT a honeypot request
+    if "sessionId" not in request_data and "session_id" not in request_data:
+        logger.info(f"📋 Validation-only request (no sessionId) - GUVI tester: {request_data}")
+        return {
+            "status": "success",
+            "reply": "Honeypot endpoint validated successfully."
+        }
+    
+    # Parse and validate the honeypot request
+    # Let Pydantic validation errors propagate - they'll return proper 422 responses
+    try:
+        honeypot_request = HoneypotRequest(**request_data)
     except Exception as e:
-        # Catch Pydantic validation errors - likely GUVI tester validation payload
-        logger.info(f"📋 Validation-only request (validation error) - GUVI tester: {str(e)}")
-        return {
-            "status": "success",
-            "reply": "Honeypot endpoint validated successfully."
-        }
+        logger.error(f"❌ Pydantic validation error: {str(e)}")
+        logger.error(f"Request data received: {request_data}")
+        raise  # Re-raise to let FastAPI handle it properly
     
     # Step 2: Extract request data
     session_id = honeypot_request.sessionId
