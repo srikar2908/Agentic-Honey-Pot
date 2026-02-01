@@ -296,8 +296,6 @@ class IntelligenceExtractor:
         # Remove duplicates
         for key in intelligence:
             intelligence[key] = list(set(intelligence[key]))
-        
-        logger.info(f"Extracted: Bank={len(intelligence['bankAccounts'])}, UPI={len(intelligence['upiIds'])}, Phone={len(intelligence['phoneNumbers'])}, Email={len(intelligence['emails'])}")
 
 # ==================== AI AGENT MODULE ====================
 
