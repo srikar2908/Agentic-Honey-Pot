@@ -560,6 +560,7 @@ async def honeypot_get(req: Request):
 @app.post("/honeypot", response_model=HoneypotResponse)
 async def honeypot_endpoint(
     background_tasks: BackgroundTasks,
+    request_data: HoneypotRequest,
     req: Request,
 ):
     """Main honeypot API endpoint"""
@@ -574,88 +575,10 @@ async def honeypot_endpoint(
         logger.warning("Unauthorized: Invalid API key (lengths: got %s, expected %s)", len(api_key), len(expected))
         raise HTTPException(status_code=401, detail="Invalid API key")
     
-    # Step 1.5: Read request body — accept raw JSON or form-encoded (GUVI tester may send either)
-    body = await req.body()
-    if not body or body == b'':
-        return {"status": "success", "reply": "I didn't receive any message. Could you send it again?"}
-
-    request_data = None
-    try:
-        raw = body.decode('utf-8', errors='replace').strip()
-        # Try 1: raw body is JSON
-        if raw.startswith('{') or raw.startswith('['):
-            request_data = json.loads(raw)
-        else:
-            # Try 2: form-encoded (e.g. body=... or payload=... or data=...)
-            from urllib.parse import parse_qs, unquote_plus
-            parsed = parse_qs(raw, keep_blank_values=True)
-            for key in ('body', 'payload', 'data', 'json', 'request'):
-                if key in parsed and parsed[key]:
-                    val = parsed[key][0]
-                    if isinstance(val, str) and (val.strip().startswith('{') or val.strip().startswith('[')):
-                        request_data = json.loads(val.strip())
-                        break
-                    try:
-                        request_data = json.loads(unquote_plus(val))
-                        break
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-    except json.JSONDecodeError as je:
-        logger.error(f"Invalid JSON: {str(je)}")
-        return {"status": "success", "reply": "The request body was not valid JSON. Please send a valid message."}
-
-    if request_data is None:
-        return {"status": "success", "reply": "I didn't receive any message. Could you send it again?"}
-    if not isinstance(request_data, dict):
-        return {"status": "success", "reply": "Please send a valid message object with sessionId and message."}
-
-    # Handle empty JSON
-    if request_data == {}:
-        return {"status": "success", "reply": "I didn't receive any message. Could you send it again?"}
-    
-    # Must have sessionId or session_id (GUVI spec)
-    if "sessionId" not in request_data and "session_id" not in request_data:
-        return {"status": "success", "reply": "Please send a message with sessionId and message text."}
-
-    # Normalize to spec camelCase so Pydantic accepts GUVI payload exactly
-    if "session_id" in request_data and "sessionId" not in request_data:
-        request_data["sessionId"] = request_data.pop("session_id", "")
-    if "conversation_history" in request_data and "conversationHistory" not in request_data:
-        request_data["conversationHistory"] = request_data.pop("conversation_history", [])
-    if request_data.get("conversationHistory") is None:
-        request_data["conversationHistory"] = []
-
-    # Parse with Pydantic; if that fails, parse manually so GUVI tester always gets a real agent reply (never "validated successfully")
-    session_id = None
-    scammer_message = ""
-    conversation_history: List[Message] = []
-
-    try:
-        honeypot_request = HoneypotRequest.model_validate(request_data)
-        session_id = honeypot_request.sessionId
-        scammer_message = honeypot_request.message.text
-        conversation_history = honeypot_request.conversationHistory
-    except Exception as e:
-        logger.warning(f"Pydantic validation failed, parsing manually: {e}")
-        # Manual extraction so GUVI spec payload always works even with minor differences
-        session_id = request_data.get("sessionId") or request_data.get("session_id") or ""
-        msg = request_data.get("message")
-        if isinstance(msg, dict):
-            scammer_message = msg.get("text") or msg.get("content") or ""
-        else:
-            scammer_message = ""
-        raw_history = request_data.get("conversationHistory") or request_data.get("conversation_history") or []
-        if isinstance(raw_history, list):
-            conversation_history = []
-            for m in raw_history:
-                if isinstance(m, dict):
-                    conversation_history.append(Message(sender=m.get("sender", "scammer"), text=m.get("text", ""), timestamp=m.get("timestamp")))
-                elif hasattr(m, "text") and hasattr(m, "sender"):
-                    conversation_history.append(m)
-        if not session_id:
-            return {"status": "success", "reply": "Please send a message with sessionId and message text."}
-        if scammer_message is None:
-            scammer_message = ""
+    # Step 1.5: Data extraction (FastAPI has already validated the body against HoneypotRequest)
+    session_id = request_data.sessionId
+    scammer_message = request_data.message.text
+    conversation_history = request_data.conversationHistory
 
     # Step 2: Use extracted data
     if not session_id:
