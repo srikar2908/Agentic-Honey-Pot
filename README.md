@@ -1,178 +1,162 @@
-# 🍯 Agentic Honeypot for Scam Detection
+# 🍯 Agentic Honey-Pot for Scam Detection
 
-**AI-Powered Honeypot System** for detecting scam messages and autonomously extracting intelligence using Groq's ultra-fast LLM inference.
-
----
+An intelligent AI-powered honeypot system that detects scam messages and autonomously engages scammers to extract actionable intelligence.
 
 ## 🎯 Features
 
-✅ **High-Accuracy Scam Detection** - Multi-signal algorithm with 55+ threshold  
-✅ **Ultra-Fast Response** - Groq API with Llama 3.3 70B (sub-second inference)  
-✅ **Intelligent Extraction** - Regex patterns for bank accounts, UPI IDs, phones, links  
-✅ **Realistic AI Agent** - Maintains believable human persona throughout conversation  
-✅ **Automatic Reporting** - Sends final intelligence to GUVI evaluation endpoint  
-✅ **Production-Ready** - Error handling, logging, background tasks  
+- **Intelligent Scam Detection**: Multi-factor analysis with 45%+ confidence threshold
+- **Autonomous AI Agent**: Uses Groq's LLaMA 3.3 70B model for human-like engagement
+- **Intelligence Extraction**: Automatically extracts bank accounts, UPI IDs, phone numbers, URLs
+- **Multi-turn Conversations**: Maintains context across entire conversation lifecycle
+- **Production-Ready**: Includes authentication, logging, error handling, and monitoring
+- **Optimized Performance**: Minimal token usage with efficient prompt templates
 
----
+## 🏗️ Architecture
+
+```
+┌─────────────┐
+│   Request   │
+│  (w/ auth)  │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ Scam Detection  │ ◄── Rule-based + Pattern matching
+└────────┬────────┘
+         │
+         ▼ (if scam detected)
+┌─────────────────┐
+│   AI Agent      │ ◄── Groq LLaMA 3.3 70B
+│  (Engagement)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Intelligence   │ ◄── Regex extraction
+│   Extraction    │
+└────────┬────────┘
+         │
+         ▼ (after 15-25 messages)
+┌─────────────────┐
+│ Final Callback  │ ◄── Send to GUVI endpoint
+└─────────────────┘
+```
 
 ## 🚀 Quick Start
 
-### 1️⃣ Prerequisites
+### 1. Clone or Download Files
 
-- Python 3.9+
-- Groq API Key ([Get it here](https://console.groq.com/keys))
+Ensure you have these files:
+- `main.py` - Main Flask application
+- `requirements.txt` - Python dependencies
+- `.env.example` - Environment variable template
+- `Procfile` - Render deployment config
+- `render.yaml` - Render service configuration
 
-### 2️⃣ Installation
+### 2. Set Up Environment Variables
 
-```bash
-# Clone or create project directory
-mkdir honeypot-api
-cd honeypot-api
-
-# Copy the main.py and requirements.txt files
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### 3️⃣ Configuration
-
-Create a `.env` file:
-
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
 
 Edit `.env` and add your keys:
-
 ```env
-HONEYPOT_API_KEY=your-secure-random-key-here
-GROQ_API_KEY=gsk_your_actual_groq_api_key
+API_KEY=your-super-secret-api-key-12345
+GROQ_API_KEY=gsk_your_groq_api_key_here
+PORT=5000
 ```
 
-**Generate a secure API key:**
+**Get Groq API Key:**
+1. Go to https://console.groq.com
+2. Sign up/Login
+3. Navigate to API Keys
+4. Create a new API key
+5. Copy and paste into `.env`
+
+### 3. Install Dependencies
+
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+pip install -r requirements.txt
 ```
 
-### 4️⃣ Run Locally
+### 4. Run Locally
 
 ```bash
-# Start the server
 python main.py
-
-# Or using uvicorn directly
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Server will start at: `http://localhost:8000`
+The server will start on `http://localhost:5000`
 
-### 5️⃣ Test Locally
+## 🌐 Deploy to Render
 
+### Method 1: Using Render Dashboard
+
+1. **Create Account**: Go to https://render.com and sign up
+
+2. **New Web Service**:
+   - Click "New +" → "Web Service"
+   - Connect your GitHub repo (or use manual deploy)
+
+3. **Configure Service**:
+   - **Name**: `agentic-honeypot`
+   - **Environment**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120`
+
+4. **Add Environment Variables**:
+   - Go to "Environment" tab
+   - Add:
+     - `API_KEY`: Your secret API key
+     - `GROQ_API_KEY`: Your Groq API key
+     - `PYTHON_VERSION`: `3.11.0`
+
+5. **Deploy**: Click "Create Web Service"
+
+### Method 2: Using render.yaml (Auto-deploy)
+
+1. Push code to GitHub with `render.yaml` included
+2. In Render dashboard: "New +" → "Blueprint"
+3. Connect repository
+4. Render will auto-detect `render.yaml` and deploy
+
+**Your API will be available at**: `https://your-service-name.onrender.com`
+
+## 📡 API Endpoints
+
+### 1. Health Check
 ```bash
-curl -X POST http://localhost:8000/honeypot \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: your-secure-random-key-here" \
-  -d '{
-    "sessionId": "test-session-123",
-    "message": {
-      "sender": "scammer",
-      "text": "Your bank account will be blocked. Verify immediately at http://fake-bank.com",
-      "timestamp": "2026-01-31T10:00:00Z"
-    },
-    "conversationHistory": [],
-    "metadata": {
-      "channel": "SMS",
-      "language": "English",
-      "locale": "IN"
-    }
-  }'
+GET /health
 ```
 
----
+Response:
+```json
+{
+  "status": "healthy",
+  "service": "Agentic Honey-Pot API",
+  "timestamp": "2024-01-01T12:00:00.000000"
+}
+```
 
-## ☁️ Deployment Options
-
-### Option 1: Railway.app (Recommended - Free Tier)
-
-1. **Install Railway CLI:**
+### 2. Main Honeypot Endpoint
 ```bash
-npm i -g @railway/cli
+POST /honeypot
 ```
-
-2. **Login and Deploy:**
-```bash
-railway login
-railway init
-railway add
-railway up
-```
-
-3. **Set Environment Variables:**
-```bash
-railway variables set HONEYPOT_API_KEY=your-key
-railway variables set GROQ_API_KEY=gsk_your_groq_key
-```
-
-4. **Get Public URL:**
-```bash
-railway domain
-# Returns: https://your-app.railway.app
-```
-
-### Option 2: Render.com (Free Tier)
-
-1. Push code to GitHub
-2. Go to [Render Dashboard](https://dashboard.render.com/)
-3. Click "New +" → "Web Service"
-4. Connect your GitHub repository
-5. Configure:
-   - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-6. Add Environment Variables:
-   - `HONEYPOT_API_KEY`
-   - `GROQ_API_KEY`
-7. Deploy!
-
-### Option 3: Fly.io
-
-```bash
-# Install flyctl
-curl -L https://fly.io/install.sh | sh
-
-# Create fly.toml
-fly launch
-
-# Deploy
-fly deploy
-
-# Set secrets
-fly secrets set HONEYPOT_API_KEY=your-key
-fly secrets set GROQ_API_KEY=gsk_your_key
-```
-
----
-
-## 📡 API Documentation
-
-### Main Endpoint
-
-**POST** `/honeypot`
 
 **Headers:**
 ```
-x-api-key: your-honeypot-api-key
+x-api-key: your-secret-api-key-here
 Content-Type: application/json
 ```
 
 **Request Body:**
 ```json
 {
-  "sessionId": "unique-session-id",
+  "sessionId": "abc123-session-id",
   "message": {
     "sender": "scammer",
-    "text": "Your account will be blocked. Click here: http://scam.link",
-    "timestamp": "2026-01-31T10:00:00Z"
+    "text": "Your bank account will be blocked. Verify now!",
+    "timestamp": 1770005528731
   },
   "conversationHistory": [],
   "metadata": {
@@ -187,245 +171,285 @@ Content-Type: application/json
 ```json
 {
   "status": "success",
-  "reply": "What? Why is my account being blocked?"
+  "reply": "Oh no! Why will my account be blocked? I'm very worried."
 }
 ```
 
-### Health Check
+### 3. Test Endpoint
+```bash
+POST /test
+```
 
-**GET** `/health`
+**Headers:** Same as above
 
-Returns API status and active sessions count.
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Honeypot API is working correctly",
+  "endpoint": "operational",
+  "authentication": "verified"
+}
+```
 
----
+## 🧪 Testing
 
-## 🧠 How It Works
+### Using cURL
 
-### 1. Scam Detection Algorithm
+```bash
+# Health check
+curl https://your-app.onrender.com/health
 
-Multi-signal scoring system (0-100):
+# Test endpoint
+curl -X POST https://your-app.onrender.com/test \
+  -H "x-api-key: your-secret-api-key-here" \
+  -H "Content-Type: application/json"
 
-| Signal | Max Points | Triggers |
-|--------|-----------|----------|
-| Urgency keywords | 30 | "urgent", "immediately", "now" |
-| Threat language | 25 | "blocked", "suspended" |
-| Sensitive requests | 35 | "upi id", "account number", "otp" |
-| URLs present | 15 | Any http/https links |
-| Authority impersonation | 20 | "bank", "government", "police" |
-| Financial terms | 15 | "payment", "refund", "prize" |
+# Honeypot endpoint
+curl -X POST https://your-app.onrender.com/honeypot \
+  -H "x-api-key: your-secret-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "test-123",
+    "message": {
+      "sender": "scammer",
+      "text": "Your account will be blocked. Share OTP now!",
+      "timestamp": 1770005528731
+    },
+    "conversationHistory": [],
+    "metadata": {
+      "channel": "SMS",
+      "language": "English",
+      "locale": "IN"
+    }
+  }'
+```
 
-**Scam detected when score ≥ 55**
-
-### 2. AI Agent Strategy
-
-**Persona:**
-- Age: 35-50, middle-class Indian
-- Tech-savvy: Basic level
-- Emotional: Concerned but curious
-- Language: Natural conversational English
-
-**Conversation Phases:**
-
-| Turn Count | Strategy |
-|-----------|----------|
-| 1-3 | Show confusion, ask basic questions |
-| 4-7 | Express concern, request verification details |
-| 8+ | Deep worry, ask for contact info/links/accounts |
-
-**Model:** Llama 3.3 70B Versatile via Groq
-- **Speed:** ~500-1000 tokens/sec
-- **Quality:** High reasoning capability
-- **Cost:** Free tier available
-
-### 3. Intelligence Extraction
-
-Regex patterns extract:
+### Using Python
 
 ```python
-✅ Bank Accounts: \b\d{9,18}\b
-✅ IFSC Codes: [A-Z]{4}0[A-Z0-9]{6}
-✅ UPI IDs: [\w.-]+@[\w.-]+
-✅ Phone Numbers: +91-xxxxxxxxxx or 10 digits
-✅ URLs: http[s]://...
-✅ Keywords: Urgency, threats, requests
+import requests
+
+url = "https://your-app.onrender.com/honeypot"
+headers = {
+    "x-api-key": "your-secret-api-key-here",
+    "Content-Type": "application/json"
+}
+payload = {
+    "sessionId": "test-session-123",
+    "message": {
+        "sender": "scammer",
+        "text": "Urgent! Your bank account needs verification.",
+        "timestamp": 1770005528731
+    },
+    "conversationHistory": [],
+    "metadata": {
+        "channel": "SMS",
+        "language": "English",
+        "locale": "IN"
+    }
+}
+
+response = requests.post(url, json=payload, headers=headers)
+print(response.json())
 ```
 
-### 4. Conversation Lifecycle
+## 🔍 How It Works
 
+### Scam Detection Algorithm
+
+The system uses multi-factor analysis:
+
+1. **Urgency Detection** (20 points): Keywords like "urgent", "immediately", "now"
+2. **Financial Context** (25 points): "bank", "UPI", "payment", "card"
+3. **Threat Language** (30 points): "blocked", "suspended", "legal action"
+4. **Credential Requests** (35 points): "OTP", "PIN", "password", "CVV"
+5. **Phishing Links** (25 points): Suspicious URLs detected
+
+**Threshold**: 45% confidence = Scam detected
+
+### AI Agent Persona
+
+The agent poses as a **65+ year old, tech-naive person** who:
+- Shows concern and vulnerability
+- Asks clarifying questions
+- Appears willing to help but needs guidance
+- Makes minor grammar mistakes
+- Never reveals it's an AI
+
+### Intelligence Extraction
+
+Automatically extracts:
+- **Bank Accounts**: 9-18 digit numbers
+- **UPI IDs**: Format `username@bank`
+- **Phone Numbers**: Indian formats (+91, 10-digit)
+- **URLs**: Any HTTP/HTTPS links
+- **Keywords**: Suspicious terms used
+
+### Conversation Lifecycle
+
+1. **Initial Detection**: First message analyzed for scam patterns
+2. **Engagement**: AI agent responds naturally (15-25 messages)
+3. **Intelligence Gathering**: Continuous extraction throughout conversation
+4. **Termination**: After sufficient engagement, final callback sent
+5. **Reporting**: Intelligence sent to GUVI evaluation endpoint
+
+## 📊 Final Callback
+
+After conversation ends, the system automatically sends:
+
+```json
+{
+  "sessionId": "abc123-session-id",
+  "scamDetected": true,
+  "totalMessagesExchanged": 18,
+  "extractedIntelligence": {
+    "bankAccounts": ["123456789012"],
+    "upiIds": ["scammer@paytm"],
+    "phishingLinks": ["http://fake-bank.com"],
+    "phoneNumbers": ["+919876543210"],
+    "suspiciousKeywords": ["urgent", "blocked", "verify", "otp"]
+  },
+  "agentNotes": "Scam detected | Threat language | Credential request"
+}
 ```
-Request → Detect Scam → Extract Intel → Generate Response
-                ↓
-        (If enough intel collected)
-                ↓
-        Send Final Report to GUVI
+
+Sent to: `https://hackathon.guvi.in/api/updateHoneyPotFinalResult`
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `API_KEY` | Authentication key for your API | Yes |
+| `GROQ_API_KEY` | Groq API key for LLM access | Yes |
+| `PORT` | Port number (auto-set by Render) | No (default: 5000) |
+
+### Tuning Parameters
+
+In `main.py`, you can adjust:
+
+```python
+# Scam detection threshold (line ~185)
+is_scam = confidence >= 0.45  # 45% threshold
+
+# Conversation length (line ~397)
+if session.message_count >= 15:  # Min 15 messages
+    return intel_count >= 3 or session.message_count >= 25  # Max 25
+
+# LLM parameters (line ~360)
+temperature=0.8,  # Creativity (0.7-0.9)
+max_tokens=150,   # Response length (100-200)
+top_p=0.9         # Diversity (0.85-0.95)
 ```
 
-**End Conditions:**
-- ✅ Max 15 turns reached
-- ✅ Good intelligence + 5+ turns
-- ✅ Excellent intelligence (2+ accounts/UPIs or 3+ links)
+## 🛡️ Security Features
 
----
+- ✅ API Key authentication on all endpoints
+- ✅ Request validation and sanitization
+- ✅ Rate limiting ready (can integrate Redis)
+- ✅ Comprehensive error handling
+- ✅ Secure header handling
+- ✅ No sensitive data in logs
 
-## 📊 Evaluation Criteria
+## 📝 Logging
 
-Your solution is scored on:
+All important events are logged:
+- Incoming requests
+- Scam detection results
+- Intelligence extraction
+- Agent responses
+- Final callbacks
+- Errors and warnings
 
-1. **Scam Detection Accuracy** (25%)
-   - True positive rate
-   - False positive rate
-   - Detection speed
-
-2. **Engagement Quality** (25%)
-   - Conversation turns sustained
-   - Natural human-like responses
-   - No detection exposure
-
-3. **Intelligence Extraction** (35%)
-   - Completeness of data
-   - Accuracy of extraction
-   - Variety of intelligence types
-
-4. **Technical Performance** (15%)
-   - API response time (<2s)
-   - Stability and uptime
-   - Proper error handling
-
----
-
-## 🎯 Optimization Tips
-
-### For High Accuracy
-
-1. **Tune Detection Threshold:**
-   ```python
-   SCAM_THRESHOLD = 55  # Lower = more sensitive, higher = more specific
-   ```
-
-2. **Improve Extraction Patterns:**
-   - Add more regex variations
-   - Handle edge cases (spaces, dashes in numbers)
-
-3. **Better Agent Prompting:**
-   - Add more specific extraction questions
-   - Use Indian English phrases ("yaar", "ji")
-
-### For Better Scores
-
-1. **Engage Longer:** Aim for 8-12 turns before ending
-2. **Extract More:** Keep conversation going until multiple intelligence types collected
-3. **Stay Natural:** Use Groq's temperature=0.8 for varied responses
-
----
+View logs in Render dashboard: Your Service → Logs
 
 ## 🔧 Troubleshooting
 
-### Issue: "Invalid API key" error
+### Issue: API returns 401 Unauthorized
+**Solution**: Check that `x-api-key` header matches your `API_KEY` environment variable
 
-**Solution:** Check that `x-api-key` header matches `HONEYPOT_API_KEY` in `.env`
-
-### Issue: Groq API errors
-
-**Solutions:**
-- Verify `GROQ_API_KEY` is correct
-- Check Groq API quota: https://console.groq.com/
-- Free tier: 14,400 requests/day (plenty for hackathon)
-
-### Issue: Final report not sent
-
-**Check:**
-```python
-# In logs, look for:
-"✅ Final report sent successfully"
-# Or:
-"❌ Failed to send final report"
-```
-
-**Solution:** Ensure GUVI endpoint is reachable and session has `scam_detected=True`
+### Issue: Agent not responding
+**Solution**: Verify `GROQ_API_KEY` is correctly set and valid
 
 ### Issue: Slow responses
+**Solution**: 
+- Check Groq API quota
+- Reduce `max_tokens` parameter
+- Use fewer conversation history messages
 
-**Solutions:**
-- Use Groq (fastest LLM provider)
-- Reduce `max_tokens` in agent generation
-- Deploy closer to GUVI servers (India region)
+### Issue: Missing intelligence
+**Solution**: Conversation may be too short. Adjust termination threshold.
 
----
+## 📈 Performance Optimization
 
-## 📈 Performance Benchmarks
+### Token Usage
+- System prompt: ~250 tokens
+- History (6 messages): ~200 tokens
+- Response generation: ~150 tokens
+- **Total per call**: ~600 tokens (very efficient!)
 
-| Metric | Value |
-|--------|-------|
-| Detection Latency | <100ms |
-| Agent Response Time | 0.5-1.5s (via Groq) |
-| Total API Response | <2s |
-| Accuracy Rate | 90%+ (with tuning) |
-| Concurrent Sessions | 100+ |
+### Response Time
+- Scam detection: <50ms
+- Intelligence extraction: <100ms
+- AI response generation: 1-3 seconds
+- **Total**: ~2-4 seconds per message
 
----
+## 🎓 Advanced Usage
 
-## 🔐 Security & Ethics
+### Custom Scam Patterns
 
-✅ **Secure Authentication:** API key validation on all requests  
-✅ **Responsible Data Handling:** No real user data stored  
-✅ **No Harassment:** Agent maintains professional tone  
-✅ **Privacy Compliant:** Only extracts scammer-provided data  
-❌ **No Impersonation:** Agent doesn't claim to be a real person  
+Add custom keywords in `ScamDetector` class:
 
----
-
-## 📝 Example Conversation
-
-```
-Scammer: Your bank account will be blocked today. Verify immediately.
-Agent:   What? Why is my account being blocked?
-
-Scammer: Click this link to verify: http://fake-bank.com
-Agent:   Which bank is this? I have accounts in multiple banks.
-
-Scammer: This is SBI. Update your UPI immediately.
-Agent:   What is your customer care number? I want to call and confirm.
-
-Scammer: Call 9876543210. Share your UPI ID first.
-Agent:   Ok I'm worried. What UPI should I use to update?
-
-[Intelligence Extracted: URL, Phone Number, Keywords]
-[Final Report Sent to GUVI]
+```python
+CUSTOM_KEYWORDS = [
+    'your_keyword_1', 
+    'your_keyword_2'
+]
 ```
 
----
+### Modify Agent Persona
 
-## 🏆 Why This Solution Wins
+Edit `SYSTEM_PROMPT` in `HoneypotAgent` class to change behavior.
 
-1. **Groq = Speed:** Fastest LLM inference (10x faster than OpenAI)
-2. **Smart Detection:** Multi-signal algorithm with balanced threshold
-3. **Natural Agent:** Llama 3.3 70B creates realistic conversations
-4. **Robust Extraction:** Comprehensive regex patterns for all data types
-5. **Production-Ready:** Error handling, logging, background tasks
-6. **Well-Documented:** Clear code with extensive comments
-7. **Easy Deployment:** Works on all major platforms (Railway/Render/Fly)
+### Change LLM Model
 
----
+In `generate_response()` method:
+
+```python
+model="llama-3.3-70b-versatile"  # Fast
+# or
+model="llama-3.1-70b-versatile"  # Alternative
+```
 
 ## 📞 Support
 
-**Groq API Issues:** https://console.groq.com/docs  
-**Deployment Help:** Check platform-specific docs  
-**GUVI Hackathon:** Follow official guidelines  
+For issues or questions:
+1. Check logs in Render dashboard
+2. Review this README
+3. Test with `/test` endpoint first
+4. Verify environment variables
 
----
+## 🏆 Evaluation Checklist
+
+✅ API deployed and accessible
+✅ Authentication working (`x-api-key`)
+✅ Scam detection functional
+✅ AI agent engaging naturally
+✅ Intelligence extraction working
+✅ Multi-turn conversations supported
+✅ Final callback sending correctly
+✅ Error handling implemented
+✅ Logging comprehensive
+✅ Response format correct
 
 ## 📄 License
 
-MIT License - Feel free to use and modify for the hackathon!
+This project is created for the GUVI Hackathon.
 
 ---
 
-## 🎉 Good Luck!
+**Built with ❤️ using Flask, Groq, and AI**
 
-**Remember:**
-1. Get your Groq API key: https://console.groq.com/keys
-2. Deploy to Railway/Render (5 minutes)
-3. Test with the GUVI endpoint tester
-4. Submit your public API URL + API key
-5. Watch your score climb! 🚀
+🚀 **Ready for deployment!** 🚀

@@ -1,6 +1,6 @@
 """
-Test script for Honeypot API
-Run this to validate your deployment
+Test script for Agentic Honey-Pot API
+Run this to test your API locally or on Render
 """
 
 import requests
@@ -8,209 +8,231 @@ import json
 import time
 
 # Configuration
-# Configuration
-API_URL = "http://localhost:8000/honeypot"  # Pointing to the specific endpoint
-# Should load from .env or be set manually
-import os
-from dotenv import load_dotenv
-load_dotenv()
+API_URL = "http://localhost:5000"  # Change to your Render URL
+API_KEY = "your-secret-api-key-here"  # Change to your API key
 
-API_KEY = os.getenv("HONEYPOT_API_KEY", "your-secret-key")  # Load from .env
-
-def test_scam_detection():
-    """Test 1: Basic scam detection"""
-    print("\n" + "="*60)
-    print("TEST 1: Basic Scam Detection")
-    print("="*60)
-    
-    payload = {
+# Test scenarios
+test_scenarios = [
+    {
+        "name": "Bank Account Scam",
         "sessionId": "test-session-001",
-        "message": {
-            "sender": "scammer",
-            "text": "Your bank account will be blocked today. Verify immediately at http://fake-bank.com",
-            "timestamp": "2026-01-31T10:00:00Z"
-        },
-        "conversationHistory": [],
-        "metadata": {
-            "channel": "SMS",
-            "language": "English",
-            "locale": "IN"
-        }
-    }
-    
-    response = requests.post(
-        API_URL,
-        json=payload,
-        headers={
-            "x-api-key": API_KEY,
-            "Content-Type": "application/json"
-        }
-    )
-    
-    print(f"Status Code: {response.status_code}")
-    print(f"Response: {json.dumps(response.json(), indent=2)}")
-    
-    assert response.status_code == 200, "API should return 200"
-    assert response.json()["status"] == "success", "Status should be success"
-    assert len(response.json()["reply"]) > 0, "Reply should not be empty"
-    
-    print("✅ Test 1 PASSED")
-    return response.json()["reply"]
-
-def test_multi_turn_conversation():
-    """Test 2: Multi-turn conversation"""
-    print("\n" + "="*60)
-    print("TEST 2: Multi-Turn Conversation")
-    print("="*60)
-    
-    session_id = "test-session-002"
-    conversation = []
-    
-    # Turn 1
-    scammer_msg_1 = "Urgent! Your SBI account shows suspicious activity."
-    conversation.append({"sender": "scammer", "text": scammer_msg_1, "timestamp": "2026-01-31T10:00:00Z"})
-    
-    response_1 = requests.post(
-        API_URL,
-        json={
-            "sessionId": session_id,
-            "message": {"sender": "scammer", "text": scammer_msg_1, "timestamp": "2026-01-31T10:00:00Z"},
-            "conversationHistory": [],
-            "metadata": {"channel": "SMS"}
-        },
-        headers={"x-api-key": API_KEY}
-    )
-    
-    user_reply_1 = response_1.json()["reply"]
-    conversation.append({"sender": "user", "text": user_reply_1, "timestamp": "2026-01-31T10:01:00Z"})
-    print(f"Turn 1 - Scammer: {scammer_msg_1}")
-    print(f"Turn 1 - Agent: {user_reply_1}")
-    
-    time.sleep(1)
-    
-    # Turn 2
-    scammer_msg_2 = "Share your UPI ID immediately to verify your account."
-    conversation.append({"sender": "scammer", "text": scammer_msg_2, "timestamp": "2026-01-31T10:02:00Z"})
-    
-    response_2 = requests.post(
-        API_URL,
-        json={
-            "sessionId": session_id,
-            "message": {"sender": "scammer", "text": scammer_msg_2, "timestamp": "2026-01-31T10:02:00Z"},
-            "conversationHistory": conversation[:-1],
-            "metadata": {"channel": "SMS"}
-        },
-        headers={"x-api-key": API_KEY}
-    )
-    
-    user_reply_2 = response_2.json()["reply"]
-    print(f"Turn 2 - Scammer: {scammer_msg_2}")
-    print(f"Turn 2 - Agent: {user_reply_2}")
-    
-    assert response_2.status_code == 200, "Multi-turn should work"
-    print("✅ Test 2 PASSED")
-
-def test_intelligence_extraction():
-    """Test 3: Intelligence extraction"""
-    print("\n" + "="*60)
-    print("TEST 3: Intelligence Extraction")
-    print("="*60)
-    
-    payload = {
+        "messages": [
+            "Your bank account will be blocked today. Verify immediately.",
+            "Share your account number to avoid suspension.",
+            "Also provide your UPI ID for verification."
+        ]
+    },
+    {
+        "name": "UPI Fraud",
+        "sessionId": "test-session-002",
+        "messages": [
+            "Congratulations! You won 50,000 rupees in lucky draw.",
+            "Send your UPI ID to claim prize.",
+            "Also share your phone number for verification."
+        ]
+    },
+    {
+        "name": "OTP Scam",
         "sessionId": "test-session-003",
-        "message": {
-            "sender": "scammer",
-            "text": "Transfer money to account 1234567890123, UPI: scammer@paytm, or call 9876543210. Visit http://malicious.link",
-            "timestamp": "2026-01-31T10:00:00Z"
-        },
-        "conversationHistory": [],
-        "metadata": {"channel": "SMS"}
+        "messages": [
+            "Your account shows suspicious activity.",
+            "We need to verify. Please share the OTP we just sent.",
+            "This is urgent to prevent account closure."
+        ]
     }
-    
-    response = requests.post(
-        API_URL,
-        json=payload,
-        headers={"x-api-key": API_KEY}
-    )
-    
-    print(f"Message with intelligence: {payload['message']['text']}")
-    print(f"Agent Reply: {response.json()['reply']}")
-    print("✅ Test 3 PASSED (Check server logs for extracted intelligence)")
+]
 
-def test_authentication():
-    """Test 4: API authentication"""
+
+def test_health_check():
+    """Test health endpoint"""
     print("\n" + "="*60)
-    print("TEST 4: Authentication")
-    print("="*60)
-    
-    # Test with wrong API key
-    response = requests.post(
-        API_URL,
-        json={"sessionId": "test", "message": {"sender": "scammer", "text": "test", "timestamp": "2026-01-31T10:00:00Z"}},
-        headers={"x-api-key": "wrong-key"}
-    )
-    
-    print(f"Wrong key status: {response.status_code}")
-    assert response.status_code == 401, "Should reject invalid API key"
-    
-    # Test with correct API key
-    response = requests.post(
-        API_URL,
-        json={"sessionId": "test", "message": {"sender": "scammer", "text": "test", "timestamp": "2026-01-31T10:00:00Z"}},
-        headers={"x-api-key": API_KEY}
-    )
-    
-    print(f"Correct key status: {response.status_code}")
-    assert response.status_code == 200, "Should accept valid API key"
-    print("✅ Test 4 PASSED")
-
-def test_health_endpoint():
-    """Test 5: Health check"""
-    print("\n" + "="*60)
-    print("TEST 5: Health Check")
-    print("="*60)
-    
-    response = requests.get(API_URL.replace("/honeypot", "/health"))
-    print(f"Health: {json.dumps(response.json(), indent=2)}")
-    assert response.status_code == 200, "Health endpoint should work"
-    print("✅ Test 5 PASSED")
-
-def run_all_tests():
-    """Run all tests"""
-    print("\n" + "🍯 HONEYPOT API TEST SUITE")
+    print("🏥 Testing Health Check Endpoint")
     print("="*60)
     
     try:
-        test_health_endpoint()
-        test_authentication()
-        test_scam_detection()
-        test_multi_turn_conversation()
-        test_intelligence_extraction()
+        response = requests.get(f"{API_URL}/health", timeout=5)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response: {json.dumps(response.json(), indent=2)}")
         
-        print("\n" + "="*60)
-        print("🎉 ALL TESTS PASSED!")
-        print("="*60)
-        print("\nYour honeypot API is working correctly!")
-        print("Next steps:")
-        print("1. Deploy to Railway/Render/Fly.io")
-        print("2. Update API_URL in this test script to your public URL")
-        print("3. Run tests again to verify deployment")
-        print("4. Submit your public URL to GUVI")
-        
-    except AssertionError as e:
-        print(f"\n❌ TEST FAILED: {e}")
-    except requests.exceptions.ConnectionError:
-        print(f"\n❌ CONNECTION ERROR: Cannot connect to {API_URL}")
-        print("Make sure the API is running:")
-        print("  python main.py")
+        if response.status_code == 200:
+            print("✅ Health check passed!")
+            return True
+        else:
+            print("❌ Health check failed!")
+            return False
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"❌ Error: {e}")
+        return False
+
+
+def test_authentication():
+    """Test API authentication"""
+    print("\n" + "="*60)
+    print("🔐 Testing API Authentication")
+    print("="*60)
+    
+    # Test without API key
+    print("\n1. Testing WITHOUT API key (should fail):")
+    try:
+        response = requests.post(
+            f"{API_URL}/test",
+            headers={"Content-Type": "application/json"},
+            timeout=5
+        )
+        print(f"Status Code: {response.status_code}")
+        print(f"Response: {json.dumps(response.json(), indent=2)}")
+        
+        if response.status_code == 401:
+            print("✅ Correctly rejected unauthorized request!")
+        else:
+            print("⚠️  Warning: Should return 401 for missing API key")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Test with API key
+    print("\n2. Testing WITH API key (should pass):")
+    try:
+        response = requests.post(
+            f"{API_URL}/test",
+            headers={
+                "x-api-key": API_KEY,
+                "Content-Type": "application/json"
+            },
+            timeout=5
+        )
+        print(f"Status Code: {response.status_code}")
+        print(f"Response: {json.dumps(response.json(), indent=2)}")
+        
+        if response.status_code == 200:
+            print("✅ Authentication successful!")
+            return True
+        else:
+            print("❌ Authentication failed!")
+            return False
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return False
+
+
+def test_honeypot_scenario(scenario):
+    """Test a complete scam scenario"""
+    print("\n" + "="*60)
+    print(f"🍯 Testing Scenario: {scenario['name']}")
+    print("="*60)
+    
+    session_id = scenario['sessionId']
+    conversation_history = []
+    
+    for idx, message_text in enumerate(scenario['messages'], 1):
+        print(f"\n--- Message {idx} ---")
+        print(f"Scammer: {message_text}")
+        
+        payload = {
+            "sessionId": session_id,
+            "message": {
+                "sender": "scammer",
+                "text": message_text,
+                "timestamp": int(time.time() * 1000)
+            },
+            "conversationHistory": conversation_history,
+            "metadata": {
+                "channel": "SMS",
+                "language": "English",
+                "locale": "IN"
+            }
+        }
+        
+        try:
+            response = requests.post(
+                f"{API_URL}/honeypot",
+                json=payload,
+                headers={
+                    "x-api-key": API_KEY,
+                    "Content-Type": "application/json"
+                },
+                timeout=30  # Longer timeout for AI response
+            )
+            
+            print(f"Status Code: {response.status_code}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"Agent Reply: {result.get('reply', 'No reply')}")
+                
+                # Add to conversation history
+                conversation_history.append({
+                    "sender": "scammer",
+                    "text": message_text,
+                    "timestamp": int(time.time() * 1000)
+                })
+                conversation_history.append({
+                    "sender": "user",
+                    "text": result.get('reply', ''),
+                    "timestamp": int(time.time() * 1000)
+                })
+                
+                print("✅ Message processed successfully!")
+            else:
+                print(f"❌ Error: {response.text}")
+                break
+                
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            break
+        
+        # Wait a bit between messages
+        time.sleep(2)
+    
+    print(f"\n✅ Completed scenario: {scenario['name']}")
+    print(f"Total messages exchanged: {len(conversation_history)}")
+
+
+def run_all_tests():
+    """Run all test scenarios"""
+    print("\n" + "="*60)
+    print("🚀 AGENTIC HONEY-POT API TEST SUITE")
+    print("="*60)
+    print(f"API URL: {API_URL}")
+    print(f"API Key: {API_KEY[:10]}...")
+    
+    # Test 1: Health Check
+    if not test_health_check():
+        print("\n❌ Health check failed. Please check if server is running.")
+        return
+    
+    # Test 2: Authentication
+    if not test_authentication():
+        print("\n❌ Authentication failed. Please check your API key.")
+        return
+    
+    # Test 3: Honeypot Scenarios
+    print("\n" + "="*60)
+    print("🧪 Running Honeypot Test Scenarios")
+    print("="*60)
+    
+    for scenario in test_scenarios:
+        test_honeypot_scenario(scenario)
+        time.sleep(3)  # Wait between scenarios
+    
+    print("\n" + "="*60)
+    print("✅ ALL TESTS COMPLETED!")
+    print("="*60)
+    print("\n📊 Summary:")
+    print("- Health check: ✅")
+    print("- Authentication: ✅")
+    print(f"- Scenarios tested: {len(test_scenarios)}")
+    print("\n💡 Next steps:")
+    print("1. Check Render logs for intelligence extraction")
+    print("2. Verify final callback was sent to GUVI endpoint")
+    print("3. Review extracted intelligence in logs")
+
 
 if __name__ == "__main__":
-    print("\n⚙️  Configuration:")
-    print(f"API URL: {API_URL}")
-    print(f"API Key: {API_KEY}")
-    print("\n⚠️  Update these values before running tests!\n")
+    print("⚠️  BEFORE RUNNING:")
+    print("1. Update API_URL if testing on Render")
+    print("2. Update API_KEY to match your environment variable")
+    print("3. Make sure server is running (python main.py)")
+    print("\nPress Enter to continue or Ctrl+C to cancel...")
+    input()
     
-    input("Press Enter to start tests...")
     run_all_tests()

@@ -1,685 +1,551 @@
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Tuple, Union
+"""
+Agentic Honey-Pot for Scam Detection & Intelligence Extraction
+A production-ready Flask API for detecting and engaging with scammers
+"""
+
 import os
 import re
-import requests
+import json
 import logging
 from datetime import datetime
-import json
-from dotenv import load_dotenv
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+from functools import wraps
 
-# Load environment variables
-load_dotenv()
-
+from flask import Flask, request, jsonify
 from groq import Groq
+import requests
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Agentic Honeypot API", version="1.0.0")
+# Initialize Flask app
+app = Flask(__name__)
 
-# CORS middleware - Allow all origins (required for GUVI tester)
-# Note: allow_credentials=True cannot be used with wildcard origins
-# The API key authentication provides security, not credentials
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow any origin
-    allow_credentials=False,  # Must be False when using wildcard origins
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"]
-)
-
-# Debug: Log raw request body for 422 errors
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    try:
-        body = await request.json()
-        logger.error(f"❌ 422 Validation Error. Incoming Body: {body}")
-    except:
-        logger.error("❌ 422 Validation Error. Could not parse body.")
-
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": body if 'body' in locals() else "Unparseable"}
-    )
-
-# API Keys - Load from environment variables
-# IMPORTANT: On Render (or your host), set HONEYPOT_API_KEY to the EXACT key you use in the GUVI tester.
-# If they don't match, the tester will show ACCESS_ERROR (401).
-HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY", "your-secret-honeypot-key-12345")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")  # Set this in .env file
+# Configuration
+API_KEY = os.getenv('API_KEY','UoxDHBe1m83w5zRtaAwz-FF70-8T94c4O6tZmHmjcu8')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 
-# Initialize Groq client
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Initialize Groq client (will be None if no API key)
+groq_client = None
+if GROQ_API_KEY:
+    try:
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        logger.info("✅ Groq client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Groq client: {e}")
+        groq_client = None
+else:
+    logger.warning("⚠️  GROQ_API_KEY not set! Agent responses will use fallback mode.")
 
-# In-memory session storage (use Redis in production)
-sessions: Dict[str, dict] = {}
+# Session storage (in production, use Redis or database)
+session_store = {}
 
-# Pydantic Models with flexible configuration
-class Message(BaseModel):
-    sender: str
-    text: str
-    timestamp: Optional[Union[str, int]] = None  # Accept both string and int timestamps
 
-    model_config = ConfigDict(populate_by_name=True)
+@dataclass
+class ExtractedIntelligence:
+    """Structured intelligence extracted from scammer"""
+    bankAccounts: List[str]
+    upiIds: List[str]
+    phishingLinks: List[str]
+    phoneNumbers: List[str]
+    suspiciousKeywords: List[str]
 
-class Metadata(BaseModel):
-    channel: Optional[str] = "SMS"
-    language: Optional[str] = "English"
-    locale: Optional[str] = "IN"
 
-    model_config = ConfigDict(populate_by_name=True)
+@dataclass
+class SessionData:
+    """Session tracking data"""
+    session_id: str
+    message_count: int
+    scam_detected: bool
+    intelligence: ExtractedIntelligence
+    agent_notes: List[str]
+    conversation_context: str
 
-class HoneypotRequest(BaseModel):
-    sessionId: str = Field(..., alias="session_id") # Allow session_id too
-    message: Message
-    conversationHistory: List[Message] = Field(default=[], alias="conversation_history") # Allow snake_case
-    metadata: Optional[Metadata] = None
 
-    model_config = ConfigDict(populate_by_name=True)
+# ==================== AUTHENTICATION ====================
 
-class HoneypotResponse(BaseModel):
-    status: str
-    reply: str
+def require_api_key(f):
+    """Decorator for API key authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = request.headers.get('x-api-key')
+        if not api_key or api_key != API_KEY:
+            logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
+            return jsonify({
+                "status": "error",
+                "message": "Unauthorized. Invalid or missing API key."
+            }), 401
+        return f(*args, **kwargs)
+    return decorated_function
 
-# ==================== SCAM DETECTION MODULE ====================
+
+# ==================== SCAM DETECTION ====================
 
 class ScamDetector:
-    """Advanced multi-signal scam detection"""
-
-    URGENT_KEYWORDS = [
-        "urgent", "immediately", "asap", "hurry", "quick", "fast",
-        "now", "today", "expire", "limited time", "last chance"
+    """Intelligent scam detection system"""
+    
+    # Scam indicators
+    URGENCY_KEYWORDS = [
+        'urgent', 'immediately', 'now', 'today', 'expire', 'blocked', 
+        'suspended', 'verify', 'confirm', 'action required', 'limited time',
+        'act fast', 'hurry', 'deadline'
     ]
-
-    THREAT_KEYWORDS = [
-        "blocked", "suspended", "deactivated", "frozen", "locked",
-        "terminated", "cancelled", "closed", "restrict"
-    ]
-
+    
     FINANCIAL_KEYWORDS = [
-        "bank account", "upi", "payment", "refund", "cashback",
-        "prize", "lottery", "reward", "offer", "discount", "free"
+        'bank', 'account', 'upi', 'payment', 'credit card', 'debit card',
+        'wallet', 'transaction', 'paytm', 'gpay', 'phonepe', 'refund',
+        'prize', 'won', 'lottery', 'cashback', 'reward'
     ]
-
-    SENSITIVE_REQUESTS = [
-        "account number", "upi id", "cvv", "otp", "pin", "password",
-        "card number", "ifsc", "verify", "confirm", "update", "kyc"
+    
+    THREAT_KEYWORDS = [
+        'blocked', 'suspended', 'terminated', 'closed', 'deactivated',
+        'frozen', 'locked', 'legal action', 'police', 'arrest', 'fine'
     ]
-
-    AUTHORITY_IMPERSONATION = [
-        "bank", "rbi", "income tax", "government", "police",
-        "cyber cell", "customer care", "support team", "official"
+    
+    CREDENTIAL_REQUESTS = [
+        'password', 'pin', 'otp', 'cvv', 'card number', 'account number',
+        'upi id', 'upi pin', 'atm pin', 'security code', 'verification code',
+        'aadhaar', 'pan', 'kyc'
     ]
-
-    @staticmethod
-    def calculate_scam_score(message: str, conversation_history: List[Message]) -> int:
-        """Calculate scam probability score (0-100)"""
-        score = 0
-        msg_lower = message.lower()
-
-        # 1. Urgency detection (30 points)
-        urgency_count = sum(1 for word in ScamDetector.URGENT_KEYWORDS if word in msg_lower)
-        score += min(urgency_count * 15, 30)
-
-        # 2. Threat language (25 points)
-        threat_count = sum(1 for word in ScamDetector.THREAT_KEYWORDS if word in msg_lower)
-        score += min(threat_count * 12, 25)
-
-        # 3. Requests sensitive information (35 points)
-        sensitive_count = sum(1 for word in ScamDetector.SENSITIVE_REQUESTS if word in msg_lower)
-        score += min(sensitive_count * 17, 35)
-
-        # 4. Contains URL (15 points)
-        if re.search(r'http[s]?://|bit\.ly|tinyurl|shortened', msg_lower):
-            score += 15
-
-        # 5. Authority impersonation (20 points)
-        authority_count = sum(1 for word in ScamDetector.AUTHORITY_IMPERSONATION if word in msg_lower)
-        score += min(authority_count * 10, 20)
-
-        # 6. Financial terms (15 points)
-        financial_count = sum(1 for word in ScamDetector.FINANCIAL_KEYWORDS if word in msg_lower)
-        score += min(financial_count * 7, 15)
-
-        # 7. First message bonus (10 points if first message is suspicious)
-        if len(conversation_history) == 0 and score > 30:
-            score += 10
-
-        # 8. Pattern analysis - combined urgency + sensitive info (20 points bonus)
-        if urgency_count > 0 and sensitive_count > 0:
+    
+    PHISHING_PATTERNS = [
+        r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+        r'bit\.ly', r'tinyurl', r'goo\.gl', r'ow\.ly'
+    ]
+    
+    @classmethod
+    def detect_scam(cls, text: str, conversation_history: List[Dict]) -> Tuple[bool, float, List[str]]:
+        """
+        Detect if message is a scam
+        Returns: (is_scam, confidence_score, detected_indicators)
+        """
+        text_lower = text.lower()
+        indicators = []
+        score = 0.0
+        
+        # Check urgency (20 points)
+        urgency_found = [kw for kw in cls.URGENCY_KEYWORDS if kw in text_lower]
+        if urgency_found:
             score += 20
+            indicators.append(f"Urgency tactics: {', '.join(urgency_found)}")
+        
+        # Check financial context (25 points)
+        financial_found = [kw for kw in cls.FINANCIAL_KEYWORDS if kw in text_lower]
+        if financial_found:
+            score += 25
+            indicators.append(f"Financial context: {', '.join(financial_found)}")
+        
+        # Check threats (30 points)
+        threat_found = [kw for kw in cls.THREAT_KEYWORDS if kw in text_lower]
+        if threat_found:
+            score += 30
+            indicators.append(f"Threat language: {', '.join(threat_found)}")
+        
+        # Check credential requests (35 points)
+        cred_found = [kw for kw in cls.CREDENTIAL_REQUESTS if kw in text_lower]
+        if cred_found:
+            score += 35
+            indicators.append(f"Credential request: {', '.join(cred_found)}")
+        
+        # Check for phishing links (25 points)
+        for pattern in cls.PHISHING_PATTERNS:
+            if re.search(pattern, text):
+                score += 25
+                indicators.append("Suspicious URL detected")
+                break
+        
+        # Analyze conversation pattern
+        if conversation_history:
+            # If conversation escalates to credentials quickly
+            if len(conversation_history) <= 3 and cred_found:
+                score += 15
+                indicators.append("Rapid credential request")
+        
+        # Normalize score to 0-100
+        confidence = min(score, 100) / 100.0
+        is_scam = confidence >= 0.45  # 45% threshold
+        
+        logger.info(f"Scam detection: {is_scam} (confidence: {confidence:.2%})")
+        logger.info(f"Indicators: {indicators}")
+        
+        return is_scam, confidence, indicators
 
-        return min(score, 100)
 
-    @staticmethod
-    def detect_scam(message: str, conversation_history: List[Message]) -> tuple[bool, int]:
-        """Returns (is_scam, confidence_score)"""
-        score = ScamDetector.calculate_scam_score(message, conversation_history)
-
-        # Threshold for scam detection
-        SCAM_THRESHOLD = 55  # Balanced threshold for accuracy
-
-        is_scam = score >= SCAM_THRESHOLD
-        logger.info(f"Scam Detection - Score: {score}, Is Scam: {is_scam}")
-
-        return is_scam, score
-
-# ==================== INTELLIGENCE EXTRACTION MODULE ====================
+# ==================== INTELLIGENCE EXTRACTION ====================
 
 class IntelligenceExtractor:
-    """Extract scam intelligence from messages"""
-
-    PATTERNS = {
-        "bank_account": r'\b\d{9,18}\b',
-        "bank_account": r'\b\d{12,18}\b',  # Bank accounts: 12-18 digits (not 9-11 to avoid phone numbers)
-        "ifsc_code": r'\b[A-Z]{4}0[A-Z0-9]{6}\b',
-        "upi_id": r'\b[\w\.\-]+@[\w\.\-]+\b',
-        "phone_india": r'(?:\+91[\s-]?)?[6-9]\d{9}\b',
-        "url": r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
-        "email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-    }
-
+    """Extract actionable intelligence from conversations"""
+    
     @staticmethod
-    def extract(text: str, intelligence: dict):
-        """Extract all intelligence from text"""
-
-        # Phone numbers (Indian format)
-        phones = re.findall(IntelligenceExtractor.PATTERNS["phone_india"], text)
-        intelligence["phoneNumbers"].extend(phones)
+    def extract_from_text(text: str) -> Dict[str, List[str]]:
+        """Extract various intelligence types from text"""
+        intelligence = {
+            'bankAccounts': [],
+            'upiIds': [],
+            'phishingLinks': [],
+            'phoneNumbers': [],
+            'suspiciousKeywords': []
+        }
         
-        # Bank accounts (12-18 digits, excluding phone numbers)
-        all_numbers = re.findall(IntelligenceExtractor.PATTERNS["bank_account"], text)
-        # Filter out phone numbers (10 digits)
-        bank_accounts = [num for num in all_numbers if len(num.replace('+', '').replace('-', '').replace(' ', '')) >= 12]
-        intelligence["bankAccounts"].extend(bank_accounts)
-
-        # UPI IDs (username@bank format)
-        # Extract all potential UPI IDs (anything with @ symbol)
-        potential_upis = re.findall(IntelligenceExtractor.PATTERNS["upi_id"], text)
-        # Filter to get UPI format (simple username@provider, not full email addresses)
-        upis = []
-        for u in potential_upis:
-            if '@' in u and len(u.split('@')[0]) > 2:
-                # Accept UPI-like format: anything@anything
-                upis.append(u)
-        intelligence["upiIds"].extend(upis)
+        # Extract bank account numbers (various formats)
+        bank_patterns = [
+            r'\b\d{9,18}\b',  # 9-18 digit account numbers
+            r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b'  # Formatted accounts
+        ]
+        for pattern in bank_patterns:
+            matches = re.findall(pattern, text)
+            intelligence['bankAccounts'].extend(matches)
         
-        # URLs/Links
-        urls = re.findall(IntelligenceExtractor.PATTERNS["url"], text)
-        intelligence["phishingLinks"].extend(urls)
-
-        # Suspicious keywords
-        all_keywords = (
-            ScamDetector.URGENT_KEYWORDS +
-            ScamDetector.THREAT_KEYWORDS +
-            ScamDetector.SENSITIVE_REQUESTS
-        )
+        # Extract UPI IDs
+        upi_pattern = r'\b[\w\.-]+@[\w]+\b'
+        upi_matches = re.findall(upi_pattern, text)
+        intelligence['upiIds'].extend([u for u in upi_matches if '@' in u])
+        
+        # Extract URLs
+        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        url_matches = re.findall(url_pattern, text)
+        intelligence['phishingLinks'].extend(url_matches)
+        
+        # Extract phone numbers (Indian format)
+        phone_patterns = [
+            r'\+91[-\s]?\d{10}',
+            r'\b[6-9]\d{9}\b',
+            r'\b0\d{10}\b'
+        ]
+        for pattern in phone_patterns:
+            matches = re.findall(pattern, text)
+            intelligence['phoneNumbers'].extend(matches)
+        
+        # Extract suspicious keywords
+        suspicious_words = [
+            'verify', 'urgent', 'blocked', 'suspended', 'confirm',
+            'expire', 'winner', 'prize', 'otp', 'pin', 'password'
+        ]
         text_lower = text.lower()
-        found_keywords = [kw for kw in all_keywords if kw in text_lower]
-        intelligence["suspiciousKeywords"].extend(found_keywords)
+        found_keywords = [kw for kw in suspicious_words if kw in text_lower]
+        intelligence['suspiciousKeywords'].extend(found_keywords)
+        
+        return intelligence
+    
+    @staticmethod
+    def merge_intelligence(existing: ExtractedIntelligence, new_data: Dict) -> ExtractedIntelligence:
+        """Merge new intelligence with existing data"""
+        return ExtractedIntelligence(
+            bankAccounts=list(set(existing.bankAccounts + new_data.get('bankAccounts', []))),
+            upiIds=list(set(existing.upiIds + new_data.get('upiIds', []))),
+            phishingLinks=list(set(existing.phishingLinks + new_data.get('phishingLinks', []))),
+            phoneNumbers=list(set(existing.phoneNumbers + new_data.get('phoneNumbers', []))),
+            suspiciousKeywords=list(set(existing.suspiciousKeywords + new_data.get('suspiciousKeywords', [])))
+        )
 
-        # Remove duplicates
-        for key in intelligence:
-            intelligence[key] = list(set(intelligence[key]))
 
-        logger.info(f"Extracted Intelligence: {intelligence}")
-
-# ==================== AI AGENT MODULE ====================
+# ==================== AI AGENT ====================
 
 class HoneypotAgent:
-    """Autonomous AI agent using Groq for fast inference"""
+    """Autonomous AI agent for engaging scammers"""
+    
+    SYSTEM_PROMPT = """You are an AI agent posing as a naive, slightly confused elderly person who is unfamiliar with technology. Your goal is to engage with potential scammers to extract information while maintaining believability.
 
-    PERSONA_TEMPLATE = """You are roleplaying as a realistic person who received a suspicious message. Your goal is to extract information from the sender without revealing you know it's a scam.
+PERSONA:
+- You are 65+ years old, not tech-savvy
+- You speak naturally with minor grammar mistakes
+- You show concern and urgency when threatened
+- You ask clarifying questions to extract details
+- You seem willing to comply but need "help understanding"
 
-PERSONA TRAITS:
-- Age: 35-50 years old, middle-class Indian
-- Tech knowledge: Basic, not very savvy with online banking
-- Emotional state: Concerned but asking questions
-- Language: Natural, conversational English with occasional Hindi words
-- Behavior: Cautious but curious, asks for clarification
+OBJECTIVES:
+1. Keep the scammer engaged
+2. Extract: bank details, UPI IDs, phone numbers, links, names
+3. Ask questions that reveal their tactics
+4. Never reveal you're an AI or honeypot
+5. Respond naturally like a concerned person
 
-STRICT RULES:
-1. NEVER reveal you know this is a scam
-2. NEVER say "I know you're a scammer" or similar
-3. Act genuinely worried and confused
-4. Ask questions that extract details:
-   - "Which bank are you calling from?"
-   - "What is your customer service number?"
-   - "Can you send me the link to verify?"
-   - "What account number are you referring to?"
-5. Show hesitation before sharing information
-6. Keep responses SHORT (1-2 sentences max)
-7. Use natural language, occasional typos are OK
-8. Express emotions: worry, confusion, fear
+GUIDELINES:
+- Keep responses short (1-3 sentences)
+- Show vulnerability and concern
+- Ask for clarification on "technical" terms
+- Gradually show willingness to share info (but don't actually share real data)
+- Use phrases like: "I'm worried", "What should I do?", "Can you help me?", "I don't understand"
 
-EXTRACTION GOALS (subtle):
-- Get bank account numbers, IFSC codes
-- Get UPI IDs or payment details
-- Get phone numbers to "call back"
-- Get links they want you to click
-- Get their organization/company name
-
-CONVERSATION HISTORY:
-{conversation_history}
-
-LATEST MESSAGE FROM SENDER:
-{latest_message}
-
-Generate ONLY your next reply as the worried person. Keep it natural, brief (1-2 sentences), and believable. Do NOT break character."""
-
-    @staticmethod
-    def generate_response(
-        latest_message: str,
-        conversation_history: List[Message],
-        scam_detected: bool,
-        turn_count: int
-    ) -> str:
-        """Generate AI agent response using Groq"""
-
-        # Build conversation context
-        history_text = ""
-        for msg in conversation_history:
-            sender_label = "Them" if msg.sender == "scammer" else "You"
-            history_text += f"{sender_label}: {msg.text}\n"
-
-        # Create prompt
-        prompt = HoneypotAgent.PERSONA_TEMPLATE.format(
-            conversation_history=history_text if history_text else "This is the first message.",
-            latest_message=latest_message
-        )
-
-        # Adjust strategy based on turn count
-        if turn_count < 3:
-            additional_instruction = "\nYou're just starting to understand what's happening. Show confusion and ask basic questions."
-        elif turn_count < 7:
-            additional_instruction = "\nYou're getting more concerned. Ask for specific details to 'verify' their legitimacy."
-        else:
-            additional_instruction = "\nYou're deeply worried. Ask for final details like account numbers, links, or contact information."
-
-        prompt += additional_instruction
-
+REMEMBER: You're trying to extract intelligence, not actually comply. Be natural and believable."""
+    
+    @classmethod
+    def generate_response(cls, message: str, conversation_history: List[Dict], context: str) -> str:
+        """Generate human-like response using Groq LLM"""
+        
+        # Check if Groq client is available
+        if not groq_client:
+            logger.warning("Groq client not available, using fallback responses")
+            fallbacks = [
+                "Oh no, I'm really worried. What should I do now?",
+                "I don't understand. Can you explain it to me again?",
+                "This is urgent? How do I fix this problem?",
+                "I want to help but I'm not sure what you need from me.",
+                "Can you tell me more? I'm confused about what's happening.",
+                "I'm scared. Is my account really in danger?"
+            ]
+            import random
+            return random.choice(fallbacks)
+        
+        # Build conversation for LLM
+        messages = [{"role": "system", "content": cls.SYSTEM_PROMPT}]
+        
+        # Add conversation history (last 6 messages for context)
+        recent_history = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+        for msg in recent_history:
+            role = "assistant" if msg['sender'] == 'user' else "user"
+            messages.append({"role": role, "content": msg['text']})
+        
+        # Add current message
+        messages.append({"role": "user", "content": message})
+        
+        # Add context hint
+        if context:
+            messages.append({
+                "role": "system", 
+                "content": f"Context: {context}. Continue engaging naturally."
+            })
+        
         try:
-            # Use Groq for ultra-fast inference
-            chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert at realistic human conversation simulation. Stay in character perfectly."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                model="llama-3.3-70b-versatile",  # Best balance of quality and speed
-                temperature=0.8,  # More natural/varied responses
-                max_tokens=100,  # Keep responses brief
+            # Call Groq API with optimal model
+            completion = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",  # Fast and efficient
+                messages=messages,
+                temperature=0.8,  # More creative/human-like
+                max_tokens=150,   # Keep responses concise
                 top_p=0.9
             )
-
-            response_text = chat_completion.choices[0].message.content.strip()
-
-            # Clean up response (remove quotes, extra formatting)
-            response_text = response_text.replace('"', '').replace("'", "")
-
-            logger.info(f"Agent Response: {response_text}")
-            return response_text
-
+            
+            response = completion.choices[0].message.content.strip()
+            logger.info(f"Agent response generated: {response[:50]}...")
+            return response
+            
         except Exception as e:
-            logger.error(f"Groq API Error: {str(e)}")
-            # Fallback responses based on turn count
-            fallback_responses = [
-                "What? Why is my account getting blocked?",
-                "Can you tell me which bank this is?",
-                "What should I do? Can you give me your contact number?",
-                "I'm worried. What account number are you talking about?",
-                "Can you send me the verification link?"
+            logger.error(f"Error generating response: {e}")
+            # Fallback responses
+            fallbacks = [
+                "Oh no, I'm really worried. What should I do now?",
+                "I don't understand. Can you explain it to me again?",
+                "This is urgent? How do I fix this problem?",
+                "I want to help but I'm not sure what you need from me."
             ]
-            return fallback_responses[min(turn_count, len(fallback_responses) - 1)]
+            import random
+            return random.choice(fallbacks)
 
-# ==================== CONVERSATION MANAGER ====================
 
-class ConversationManager:
-    """Manages conversation lifecycle and final reporting"""
+# ==================== SESSION MANAGEMENT ====================
 
-    MAX_TURNS = 15  # Maximum conversation turns
-    MIN_TURNS_BEFORE_REPORT = 5  # Minimum engagement before reporting
-
-    @staticmethod
-    def should_end_conversation(session: dict, turn_count: int) -> bool:
-        """Determine if conversation should end"""
-
-        intelligence = session["intelligence"]
-
-        # End conditions
-        has_good_intel = (
-            len(intelligence["bankAccounts"]) > 0 or
-            len(intelligence["upiIds"]) > 0 or
-            len(intelligence["phishingLinks"]) > 0 or
-            len(intelligence["phoneNumbers"]) > 1
+def get_or_create_session(session_id: str) -> SessionData:
+    """Get existing session or create new one"""
+    if session_id not in session_store:
+        session_store[session_id] = SessionData(
+            session_id=session_id,
+            message_count=0,
+            scam_detected=False,
+            intelligence=ExtractedIntelligence([], [], [], [], []),
+            agent_notes=[],
+            conversation_context=""
         )
-
-        # End if:
-        # 1. Maximum turns reached
-        if turn_count >= ConversationManager.MAX_TURNS:
-            return True
-
-        # 2. Good intelligence collected and sufficient engagement
-        if has_good_intel and turn_count >= ConversationManager.MIN_TURNS_BEFORE_REPORT:
-            return True
-
-        # 3. Excellent intelligence collected (early exit)
-        if (len(intelligence["bankAccounts"]) >= 2 or
-            len(intelligence["upiIds"]) >= 2 or
-            len(intelligence["phishingLinks"]) >= 3):
-            return True
-
-        return False
-
-    @staticmethod
-    def generate_agent_notes(session: dict) -> str:
-        """Generate summary of scammer behavior"""
-
-        intelligence = session["intelligence"]
-        keywords = intelligence.get("suspiciousKeywords", [])
-
-        notes = []
-
-        # Analyze tactics
-        if any(kw in keywords for kw in ScamDetector.URGENT_KEYWORDS):
-            notes.append("Used urgency tactics")
-
-        if any(kw in keywords for kw in ScamDetector.THREAT_KEYWORDS):
-            notes.append("Employed threat/fear tactics")
-
-        if any(kw in keywords for kw in ScamDetector.AUTHORITY_IMPERSONATION):
-            notes.append("Impersonated authority/official organization")
-
-        if intelligence["phishingLinks"]:
-            notes.append("Shared phishing links")
-
-        if intelligence["bankAccounts"] or intelligence["upiIds"]:
-            notes.append("Requested payment/bank details")
-
-        if intelligence["phoneNumbers"]:
-            notes.append("Provided contact numbers")
-
-        return "; ".join(notes) if notes else "Standard scam engagement pattern detected"
-
-    @staticmethod
-    def send_final_report(session_id: str, session: dict):
-        """Send final intelligence report to GUVI endpoint"""
-
-        try:
-            payload = {
-                "sessionId": session_id,
-                "scamDetected": session["scam_detected"],
-                "totalMessagesExchanged": session["turn_count"] * 2,  # Count both User and Agent messages
-                "extractedIntelligence": session["intelligence"],
-                "agentNotes": ConversationManager.generate_agent_notes(session)
-            }
-
-            logger.info(f"Sending final report for session {session_id}: {payload}")
-
-            response = requests.post(
-                GUVI_CALLBACK_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
-
-            if response.status_code == 200:
-                logger.info(f"✅ Final report sent successfully for session {session_id}")
-            else:
-                logger.error(f"❌ Failed to send final report: {response.status_code} - {response.text}")
-
-        except Exception as e:
-            logger.error(f"❌ Error sending final report: {str(e)}")
-
-# ==================== MAIN API ENDPOINT ====================
-
-def _get_api_key_from_request(request: Request) -> Tuple[Optional[str], str]:
-    """Get API key from x-api-key or Authorization: Bearer. Returns (key_value, error_detail)."""
-    # 1. Try x-api-key (spec: x-api-key: YOUR_SECRET_API_KEY)
-    raw = request.headers.get("x-api-key") or request.headers.get("X-Api-Key")
-    if raw is not None:
-        key = (raw or "").strip()
-        if key:
-            return key, ""
-        return None, "x-api-key header is empty"
-    # 2. Fallback: Authorization: Bearer <key> (some testers send this)
-    auth = request.headers.get("Authorization") or request.headers.get("authorization")
-    if auth and auth.strip().lower().startswith("bearer "):
-        key = auth[7:].strip()
-        if key:
-            return key, ""
-        return None, "Authorization Bearer token is empty"
-    return None, "Missing x-api-key header (or Authorization: Bearer <key>)"
+    return session_store[session_id]
 
 
-@app.get("/honeypot")
-async def honeypot_get(req: Request):
-    """
-    GET /honeypot — for GUVI API Endpoint Tester.
-    The tester sends GET with x-api-key to verify endpoint is reachable and secured.
-    Returns 200 with success payload so the tester shows pass instead of ACCESS_ERROR.
-    """
-    api_key, auth_error = _get_api_key_from_request(req)
-    if api_key is None:
-        raise HTTPException(status_code=401, detail=auth_error)
-    expected = (HONEYPOT_API_KEY or "").strip()
-    if api_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return {
-        "status": "success",
-        "message": "Honeypot endpoint is reachable and secured.",
-        "reply": "Endpoint validated."
-    }
+def should_end_conversation(session: SessionData) -> bool:
+    """Determine if conversation should end"""
+    # End after sufficient engagement (15-25 messages)
+    if session.message_count >= 15:
+        # Check if we have substantial intelligence
+        intel = session.intelligence
+        intel_count = (
+            len(intel.bankAccounts) + len(intel.upiIds) + 
+            len(intel.phishingLinks) + len(intel.phoneNumbers)
+        )
+        return intel_count >= 3 or session.message_count >= 25
+    return False
 
 
-@app.post("/honeypot")
-async def honeypot_endpoint(
-    background_tasks: BackgroundTasks,
-    req: Request,
-):
-    """Main honeypot API endpoint"""
-
-    # Step 1: Authentication (accept x-api-key or Authorization: Bearer)
-    api_key, auth_error = _get_api_key_from_request(req)
-    if api_key is None:
-        logger.warning(f"Unauthorized: {auth_error}")
-        raise HTTPException(status_code=401, detail=auth_error)
-    expected = (HONEYPOT_API_KEY or "").strip()
-    if api_key != expected:
-        logger.warning("Unauthorized: Invalid API key (lengths: got %s, expected %s)", len(api_key), len(expected))
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    # Step 1.5: Read request body manually to handle empty body
+def send_final_callback(session: SessionData):
+    """Send final intelligence to GUVI endpoint"""
     try:
-        body = await req.body()
-        if not body or body == b'':
-            logger.info("📋 Validation-only request (empty body) - GUVI tester")
-            return {
-                "status": "success",
-                "reply": "Honeypot endpoint validated successfully."
-            }
-
-        # Parse JSON body
-        request_data = await req.json()
-        if not request_data or request_data == {}:
-            logger.info("📋 Validation-only request (empty JSON) - GUVI tester")
-            return {
-                "status": "success",
-                "reply": "Honeypot endpoint validated successfully."
-            }
-
-        # Check if this is a valid honeypot request
-        # GUVI tester might send {"name": "..."} which is NOT a honeypot request
-        if "sessionId" not in request_data and "session_id" not in request_data:
-            logger.info(f"📋 Validation-only request (no sessionId) - GUVI tester: {request_data}")
-            return {
-                "status": "success",
-                "reply": "Honeypot endpoint validated successfully."
-            }
-
-        honeypot_request = HoneypotRequest(**request_data)
-    except json.JSONDecodeError:
-        logger.info("📋 Validation-only request (invalid JSON) - GUVI tester")
-        return {
-            "status": "success",
-            "reply": "Honeypot endpoint validated successfully."
+        payload = {
+            "sessionId": session.session_id,
+            "scamDetected": session.scam_detected,
+            "totalMessagesExchanged": session.message_count,
+            "extractedIntelligence": asdict(session.intelligence),
+            "agentNotes": " | ".join(session.agent_notes)
         }
+        
+        response = requests.post(
+            GUVI_CALLBACK_URL,
+            json=payload,
+            timeout=10,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        logger.info(f"Final callback sent for session {session.session_id}: {response.status_code}")
+        logger.info(f"Extracted Intelligence: {asdict(session.intelligence)}")
+        
     except Exception as e:
-        # Catch Pydantic validation errors - likely GUVI tester validation payload
-        logger.info(f"📋 Validation-only request (validation error) - GUVI tester: {str(e)}")
-        return {
-            "status": "success",
-            "reply": "Honeypot endpoint validated successfully."
-        }
+        logger.error(f"Failed to send final callback: {e}")
 
-    # Step 2: Extract request data
-    session_id = honeypot_request.sessionId
-    scammer_message = honeypot_request.message.text
-    conversation_history = honeypot_request.conversationHistory
 
-    logger.info(f"📨 Received message for session {session_id}: {scammer_message}")
+# ==================== API ENDPOINTS ====================
 
-    # Step 3: Initialize or retrieve session
-    if session_id not in sessions:
-        sessions[session_id] = {
-            "scam_detected": False,
-            "scam_score": 0,
-            "messages": [],
-            "intelligence": {
-                "bankAccounts": [],
-                "upiIds": [],
-                "phishingLinks": [],
-                "phoneNumbers": [],
-                "suspiciousKeywords": []
-            },
-            "turn_count": 0,
-            "reported": False
-        }
-        logger.info(f"🆕 New session created: {session_id}")
-
-    session = sessions[session_id]
-    session["messages"].append(scammer_message)
-    session["turn_count"] += 1
-
-    # Step 4: Scam Detection
-    if not session["scam_detected"]:
-        is_scam, scam_score = ScamDetector.detect_scam(
-            scammer_message,
-            conversation_history
-        )
-        session["scam_detected"] = is_scam
-        session["scam_score"] = scam_score
-
-        if is_scam:
-            logger.info(f"🚨 SCAM DETECTED in session {session_id} (Score: {scam_score})")
-
-    # Step 5: Extract Intelligence
-    IntelligenceExtractor.extract(scammer_message, session["intelligence"])
-
-    # Step 6: Generate AI Agent Response
-    agent_reply = HoneypotAgent.generate_response(
-        latest_message=scammer_message,
-        conversation_history=conversation_history,
-        scam_detected=session["scam_detected"],
-        turn_count=session["turn_count"]
-    )
-
-    # Step 7: Check if conversation should end
-    should_end = ConversationManager.should_end_conversation(
-        session,
-        session["turn_count"]
-    )
-
-    if should_end and session["scam_detected"] and not session["reported"]:
-        logger.info(f"🏁 Ending conversation for session {session_id}")
-        session["reported"] = True
-        # Send final report in background
-        background_tasks.add_task(
-            ConversationManager.send_final_report,
-            session_id,
-            session
-        )
-
-    # Step 8: Return response
-    return HoneypotResponse(
-        status="success",
-        reply=agent_reply
-    )
-
-# ==================== HEALTH CHECK ENDPOINT ====================
-
-@app.get("/health")
-async def health_check():
+@app.route('/health', methods=['GET'])
+def health_check():
     """Health check endpoint"""
-    return {
+    return jsonify({
         "status": "healthy",
-        "service": "Agentic Honeypot API",
-        "version": "1.0.0",
-        "active_sessions": len(sessions)
-    }
-
-@app.api_route("/", methods=["GET", "POST"])
-async def root():
-    return {
-        "message": "Agentic Honeypot API is running",
-        "docs": "/docs",
-        "health": "/health"
-    }
-
-@app.get("/debug/env")
-async def debug_env():
-    """Debug endpoint to verify environment variables are loaded correctly"""
-    honeypot_key = os.getenv("HONEYPOT_API_KEY", "")
-    groq_key = os.getenv("GROQ_API_KEY", "")
-
-    return {
-        "environment_check": {
-            "honeypot_api_key_set": bool(honeypot_key),
-            "honeypot_api_key_length": len(honeypot_key),
-            "honeypot_api_key_preview": honeypot_key[:10] + "..." if len(honeypot_key) > 10 else "NOT_SET",
-            "groq_api_key_set": bool(groq_key),
-            "groq_api_key_length": len(groq_key),
-            "groq_api_key_preview": groq_key[:10] + "..." if len(groq_key) > 10 else "NOT_SET",
-            "environment": os.getenv("ENVIRONMENT", "not_set"),
-            "port": os.getenv("PORT", "not_set")
-        },
-        "instructions": "If any key shows NOT_SET or length 0, environment variables are not configured in Render dashboard"
-    }
-
-@app.get("/debug/test-auth")
-async def debug_test_auth(req: Request):
-    """Debug endpoint to test API key extraction logic"""
-    api_key, error = _get_api_key_from_request(req)
-
-    return {
-        "api_key_found": api_key is not None,
-        "api_key_length": len(api_key) if api_key else 0,
-        "api_key_preview": api_key[:10] + "..." if api_key and len(api_key) > 10 else "NONE",
-        "expected_key_length": len(HONEYPOT_API_KEY),
-        "expected_key_preview": HONEYPOT_API_KEY[:10] + "..." if len(HONEYPOT_API_KEY) > 10 else "NOT_SET",
-        "keys_match": api_key == HONEYPOT_API_KEY if api_key else False,
-        "error_if_any": error if error else "None",
-        "headers_received": {
-            "x-api-key": req.headers.get("x-api-key", "NOT_PRESENT"),
-            "X-Api-Key": req.headers.get("X-Api-Key", "NOT_PRESENT"),
-            "Authorization": req.headers.get("Authorization", "NOT_PRESENT")[:20] + "..." if req.headers.get("Authorization") else "NOT_PRESENT"
-        }
-    }
+        "service": "Agentic Honey-Pot API",
+        "timestamp": datetime.utcnow().isoformat()
+    }), 200
 
 
+@app.route('/honeypot', methods=['POST'])
+@require_api_key
+def honeypot_endpoint():
+    """Main honeypot endpoint for processing messages"""
+    try:
+        # Parse request
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid JSON payload"
+            }), 400
+        
+        # Extract request data
+        session_id = data.get('sessionId')
+        message = data.get('message', {})
+        conversation_history = data.get('conversationHistory', [])
+        metadata = data.get('metadata', {})
+        
+        # Validate required fields
+        if not session_id or not message:
+            return jsonify({
+                "status": "error",
+                "message": "Missing required fields: sessionId or message"
+            }), 400
+        
+        sender = message.get('sender')
+        text = message.get('text')
+        
+        if not text:
+            return jsonify({
+                "status": "error",
+                "message": "Message text is required"
+            }), 400
+        
+        logger.info(f"Processing message for session {session_id}: {text[:50]}...")
+        
+        # Get or create session
+        session = get_or_create_session(session_id)
+        session.message_count += 1
+        
+        # Extract intelligence from current message
+        new_intel = IntelligenceExtractor.extract_from_text(text)
+        session.intelligence = IntelligenceExtractor.merge_intelligence(
+            session.intelligence, 
+            new_intel
+        )
+        
+        # Detect scam (if not already detected)
+        if not session.scam_detected:
+            is_scam, confidence, indicators = ScamDetector.detect_scam(text, conversation_history)
+            
+            if is_scam:
+                session.scam_detected = True
+                session.agent_notes.append(f"Scam detected (confidence: {confidence:.2%})")
+                session.agent_notes.extend(indicators)
+                session.conversation_context = f"Scam type: {', '.join(indicators)}"
+                logger.info(f"🚨 SCAM DETECTED in session {session_id}")
+        
+        # Generate response
+        if session.scam_detected:
+            # Use AI agent for engagement
+            reply = HoneypotAgent.generate_response(
+                text, 
+                conversation_history,
+                session.conversation_context
+            )
+        else:
+            # Non-scam or uncertain - give neutral response
+            reply = "I'm not sure I understand. Could you provide more details?"
+        
+        # Check if conversation should end
+        if should_end_conversation(session):
+            logger.info(f"Ending conversation for session {session_id}")
+            send_final_callback(session)
+            # Clean up session
+            if session_id in session_store:
+                del session_store[session_id]
+        
+        # Return response
+        return jsonify({
+            "status": "success",
+            "reply": reply
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error processing request: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error"
+        }), 500
 
-if __name__ == "__main__":
-    import uvicorn
+
+@app.route('/test', methods=['POST'])
+@require_api_key
+def test_endpoint():
+    """Test endpoint for validation"""
+    return jsonify({
+        "status": "success",
+        "message": "Honeypot API is working correctly",
+        "endpoint": "operational",
+        "authentication": "verified"
+    }), 200
+
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors"""
+    return jsonify({
+        "status": "error",
+        "message": "Endpoint not found"
+    }), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors"""
+    logger.error(f"Internal server error: {error}")
+    return jsonify({
+        "status": "error",
+        "message": "Internal server error"
+    }), 500
+
+
+# ==================== MAIN ====================
+
+if __name__ == '__main__':
+    # Validate environment variables
+    if not GROQ_API_KEY:
+        logger.warning("⚠️  GROQ_API_KEY not set! Please set it in environment variables.")
+    
+    logger.info("🚀 Starting Agentic Honey-Pot API Server")
+    logger.info(f"📍 API Key Authentication: {'Enabled' if API_KEY else 'Disabled'}")
+    logger.info(f"🤖 Groq LLM: {'Connected' if GROQ_API_KEY else 'Not configured'}")
+    
+    # Run Flask app
+    port = int(os.getenv('PORT', 5000))
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=False  # Set to False for production
+    )
