@@ -191,7 +191,7 @@ class IntelligenceExtractor:
     def extract(text: str, intelligence: dict):
         """Extract all intelligence from text"""
 
-      
+        # Phone numbers (Indian format)
         phones = re.findall(IntelligenceExtractor.PATTERNS["phone_india"], text)
         intelligence["phoneNumbers"].extend(phones)
         
@@ -201,31 +201,16 @@ class IntelligenceExtractor:
         bank_accounts = [num for num in all_numbers if len(num.replace('+', '').replace('-', '').replace(' ', '')) >= 12]
         intelligence["bankAccounts"].extend(bank_accounts)
 
-        # UPI IDs
-        # Emails (proper email format with TLD)
-        emails = re.findall(IntelligenceExtractor.PATTERNS["email"], text)
-        intelligence["emails"].extend(emails)
-        
-        # UPI IDs (username@bank format, excluding proper emails)
+        # UPI IDs (username@bank format)
+        # Extract all potential UPI IDs (anything with @ symbol)
         potential_upis = re.findall(IntelligenceExtractor.PATTERNS["upi_id"], text)
-        # Filter to ensure it's actually UPI format (something@something)
-      
-        # Filter: must have @, length > 2 before @, and NOT a proper email (no .com/.in etc)
+        # Filter to get UPI format (simple username@provider, not full email addresses)
         upis = []
         for u in potential_upis:
             if '@' in u and len(u.split('@')[0]) > 2:
-                # Check if it's NOT a proper email (no TLD like .com, .in, .org)
-                domain = u.split('@')[1] if len(u.split('@')) > 1 else ''
-                if '.' not in domain or not any(domain.endswith(tld) for tld in ['.com', '.in', '.org', '.net', '.co']):
-                    upis.append(u)
-                else:
-                    # It's a proper email, not UPI
-                    if u not in intelligence["emails"]:
-                        intelligence["emails"].append(u)
+                # Accept UPI-like format: anything@anything
+                upis.append(u)
         intelligence["upiIds"].extend(upis)
-
-        # Phone numbers
-      
         
         # URLs/Links
         urls = re.findall(IntelligenceExtractor.PATTERNS["url"], text)
@@ -576,7 +561,6 @@ async def honeypot_endpoint(
             "intelligence": {
                 "bankAccounts": [],
                 "upiIds": [],
-                "emails": [],  # Added emails field
                 "phishingLinks": [],
                 "phoneNumbers": [],
                 "suspiciousKeywords": []
