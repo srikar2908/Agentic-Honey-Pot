@@ -19,15 +19,24 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Virtual Environment
 venv/
 env/
 ENV/
+hclguvi/
+.venv/
+virtualenv/
 
 # Environment variables
 .env
 .env.local
+.env.*.local
+.env.production
+.env.development
 
 # IDE
 .vscode/
@@ -35,18 +44,117 @@ ENV/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+.project
+.pydevproject
+.settings/
 
 # OS
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
+*.sublime-workspace
 
-# Logs
+# Logs & Temporary
 *.log
+*.log.*
+logs/
+*.tmp
+*.temp
+temp/
+tmp/
 
-# Testing
+# Testing & Coverage
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.hypothesis/
+pytest.ini
+.pytest_cache
+coverage.xml
+*.cover
+
+# Debugging
+.debuginfo/
+.pdb
+debug.log
+*.pyc
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+instance/
+.webassets-cache
 
 # Deployment
 *.pid
+*.sock
+*.pem
+*.key
+*.crt
+.env.prod
+.env.local
+dist/
+build/
+
+# Dependencies
+.pip-cache/
+pip-cache/
+
+# Backup & Temporary Files
+*.bak
+*.backup
+*~
+*.swp
+*.orig
+.#*
+
+# IDE specific
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+.idea/
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# OS specific
+desktop.ini
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# CI/CD
+.github/workflows/*.log
+
+# MacOS
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Node (if using any frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+*.swp
+*.swo
+*~
+.env.swp
+.vscode-settings.json
+settings.json
+
+# Custom project files (test scripts & debugging)
+test_*.log
+debug_*.log
+*.test.py
