@@ -1,5 +1,5 @@
 #################################################
-# 🔐 ENV / SECRETS
+# 🔐 ENV / SECRETS (NEVER PUSH THESE)
 #################################################
 .env
 .env.*
@@ -23,7 +23,7 @@ ENV/
 hclguvi/
 
 #################################################
-# 🧠 PYTHON TOOLING
+# 🧠 PYTHON TOOLING / CACHES
 #################################################
 .mypy_cache/
 .pytest_cache/
@@ -33,7 +33,7 @@ hclguvi/
 .nox/
 
 #################################################
-# 📊 COVERAGE / TEST OUTPUT
+# 📊 TEST / COVERAGE
 #################################################
 .coverage
 .coverage.*
@@ -41,7 +41,7 @@ htmlcov/
 coverage.xml
 
 #################################################
-# 🧪 LOCAL TEST SCRIPTS (REMOVE FROM REPO)
+# 🧪 LOCAL TEST SCRIPTS
 #################################################
 test_*.py
 *_test.py
@@ -75,11 +75,6 @@ Thumbs.db
 *.log
 
 #################################################
-# 🐳 OPTIONAL DOCKER OVERRIDES
-#################################################
-docker-compose.override.yml
-
-#################################################
 # 🚀 DATABASE / LOCAL FILES
 #################################################
 *.sqlite3
@@ -89,3 +84,11 @@ docker-compose.override.yml
 # 🔥 PYTHON VERSION MANAGERS
 #################################################
 .python-version
+
+#################################################
+# ❌ REMOVE OTHER DEPLOYMENT FILES
+# (Since you are using Railway)
+#################################################
+render.yaml
+docker-compose.yml
+docker-compose.override.yml
