@@ -1,9 +1,3 @@
-"""
-AEGIS AI
-Adaptive Agentic Honeypot for Scam Intelligence
-FINAL Elite Hackathon + Production Architecture
-"""
-
 import os
 import re
 import json
@@ -30,27 +24,15 @@ API_KEY = os.getenv("API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PORT = int(os.getenv("PORT", 5000))
 
+CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
+
 if not API_KEY:
     raise RuntimeError("Missing API_KEY")
 
-CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
-
 groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# =====================================================
-# LOGGING
-# =====================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
-
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AEGIS")
-
-# =====================================================
-# APP
-# =====================================================
 
 app = Flask(__name__)
 
@@ -67,6 +49,7 @@ class Intelligence:
     upiIds: List[str] = field(default_factory=list)
     phishingLinks: List[str] = field(default_factory=list)
     phoneNumbers: List[str] = field(default_factory=list)
+    ifscCodes: List[str] = field(default_factory=list)
     suspiciousKeywords: List[str] = field(default_factory=list)
 
 
@@ -77,8 +60,7 @@ class Session:
     scam_detected: bool = False
     scam_type: str = "unknown"
     intelligence: Intelligence = field(default_factory=Intelligence)
-    asked_topics: Set[str] = field(default_factory=set)
-
+    seen_messages: Set[str] = field(default_factory=set)
 
 # =====================================================
 # AUTH
@@ -94,17 +76,23 @@ def require_api_key(f):
 
 
 # =====================================================
-# ADVANCED PATTERN EXTRACTION
+# EXTRACTOR (ELITE VERSION)
 # =====================================================
 
 class Extractor:
 
     PHONE = re.compile(r'(?:\+91|91)?[6-9][\d\-\s]{9,12}')
-    UPI = re.compile(r'\b[\w.-]{3,}@(upi|ybl|okaxis|oksbi|paytm|ibl|axl|okicici|okhdfcbank)\b')
     BANK = re.compile(r'\b\d{11,18}\b')
+    IFSC = re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', re.I)
+
+    # ✅ FIXED UPI REGEX
+    UPI = re.compile(
+        r'\b([\w\.\-]{3,}@(upi|ybl|okaxis|oksbi|paytm|ibl|axl|okicici|okhdfcbank))\b',
+        re.I
+    )
 
     URL_PATTERNS = [
-        r'https?://[^\s<>"\'\[\]{}\\^`|]+',
+        r'https?://[^\s<>"]+',
         r'\b(?:bit\.ly|tinyurl\.com|goo\.gl|ow\.ly)/\w+',
         r'\b(?:www\.)?[\w\-]+\.(?:tk|ml|ga|cf|gq|xyz|top|club|site|online)\b'
     ]
@@ -117,42 +105,39 @@ class Extractor:
     @classmethod
     def extract(cls, text):
 
-        # ---- Phone Normalization ----
-        raw_phones = re.findall(cls.PHONE, text)
+        # Phone normalization
+        raw = re.findall(cls.PHONE, text)
 
-        clean_numbers = {
-            re.sub(r'\D', '', p)[-10:]
-            for p in raw_phones
+        phones = {
+            "+91" + re.sub(r'\D','',p)[-10:]
+            for p in raw
+            if len(re.sub(r'\D','',p)[-10:]) == 10
         }
 
-        phones = [
-            f"+91{p}"
-            for p in clean_numbers
-            if len(p) == 10 and p[0] in "6789"
-        ]
-
-        # ---- URL Detection ----
+        # URLs
         urls = []
-
         for pattern in cls.URL_PATTERNS:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-
+            matches = re.findall(pattern, text, re.I)
             for m in matches:
                 if not m.startswith("http"):
                     m = "http://" + m
                 urls.append(m)
 
+        # UPI FIX
+        upis = [u[0].lower() for u in re.findall(cls.UPI, text)]
+
         return {
             "phoneNumbers": list(set(phones)),
-            "upiIds": list(set(u.lower() for u in cls.UPI.findall(text))),
+            "upiIds": list(set(upis)),
             "bankAccounts": list(set(cls.BANK.findall(text))),
+            "ifscCodes": list(set(cls.IFSC.findall(text))),
             "phishingLinks": list(set(urls)),
             "suspiciousKeywords":[k for k in cls.KEYWORDS if k in text.lower()]
         }
 
 
 # =====================================================
-# SCAM DETECTOR
+# DETECTOR
 # =====================================================
 
 class Detector:
@@ -182,96 +167,28 @@ class Detector:
 
 
 # =====================================================
-# ADAPTIVE PROFILER
-# =====================================================
-
-class Profiler:
-
-    TYPES={
-        "upi":["upi","collect","payment"],
-        "bank":["account","kyc","blocked"],
-        "phishing":["link","click","verify"],
-        "refund":["refund","cashback"],
-        "job":["job","salary","offer"]
-    }
-
-    @classmethod
-    def classify(cls,text):
-
-        t=text.lower()
-
-        scores={
-            k:sum(w in t for w in v)
-            for k,v in cls.TYPES.items()
-        }
-
-        best=max(scores,key=scores.get)
-
-        return best if scores[best]>0 else "unknown"
-
-
-# =====================================================
 # AGENT
 # =====================================================
 
-TARGETS={
-    "upi":["upi id","collect request"],
-    "bank":["account number","ifsc","employee id"],
-    "phishing":["website","support number"]
-}
+FALLBACKS=[
+    "Oh dear… could you explain what I need to do?",
+    "I'm worried. Is this urgent?",
+    "I don't understand computers well, please guide me."
+]
 
 SYSTEM_PROMPT="""
 You are Ramesh, a 67-year-old retired Indian.
 
-PERSONALITY:
-- polite
-- worried about finances
-- slightly confused with technology
-- trusting but cautious
-
-Use natural phrases occasionally:
-"Oh dear", "I'm worried", "Is this urgent?", "I don't understand computers well."
-
+Be polite, worried, slightly confused.
 Never reveal scam detection.
-
-Ask natural verification questions.
-
-Reply in 1-2 short sentences.
-
-Return JSON only:
-{
- "reply":"text",
- "intelligence":{
-   "bankAccounts":[],
-   "upiIds":[],
-   "phishingLinks":[],
-   "phoneNumbers":[],
-   "suspiciousKeywords":[]
- }
-}
+Ask for verification details naturally.
+Return JSON with reply + intelligence.
 """
-
-
-FALLBACKS = [
-    "Oh dear… I'm worried. Could you explain what I need to do?",
-    "I don't understand these things well. What should I do next?",
-    "Is this urgent? I'm a bit confused.",
-    "My son usually handles this… can you guide me?"
-]
-
 
 def agent_reply(msg,history,session,intel):
 
     if not groq:
         return random.choice(FALLBACKS),{}
-
-    targets=TARGETS.get(session.scam_type,[])
-
-    context=f"""
-Scam type: {session.scam_type}
-Still need: {targets}
-Extract NEW intelligence only.
-"""
 
     messages=[{"role":"system","content":SYSTEM_PROMPT}]
 
@@ -280,21 +197,20 @@ Extract NEW intelligence only.
         messages.append({"role":role,"content":h["text"]})
 
     messages.append({"role":"user","content":msg})
-    messages.append({"role":"user","content":context})
 
     try:
 
         completion=groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
             temperature=0.7,
-            max_tokens=220,
+            max_tokens=200,
             response_format={"type":"json_object"},
             messages=messages
         )
 
         result=json.loads(completion.choices[0].message.content)
 
-        return result.get("reply", random.choice(FALLBACKS)), result.get("intelligence",{})
+        return result.get("reply",random.choice(FALLBACKS)), result.get("intelligence",{})
 
     except Exception:
         logger.error(traceback.format_exc())
@@ -302,7 +218,7 @@ Extract NEW intelligence only.
 
 
 # =====================================================
-# INTELLIGENCE MERGER
+# MERGER
 # =====================================================
 
 def merge(existing,*sources):
@@ -318,25 +234,55 @@ def merge(existing,*sources):
         upiIds=combine("upiIds"),
         phishingLinks=combine("phishingLinks"),
         phoneNumbers=combine("phoneNumbers"),
+        ifscCodes=combine("ifscCodes"),
         suspiciousKeywords=combine("suspiciousKeywords")
     )
 
 
 # =====================================================
-# EVIDENCE + CALLBACK
+# TERMINATION (FIXED)
+# =====================================================
+
+def should_end(session):
+
+    intel_score=(
+        len(session.intelligence.bankAccounts)*3+
+        len(session.intelligence.upiIds)*3+
+        len(session.intelligence.phoneNumbers)*2+
+        len(session.intelligence.phishingLinks)*2
+    )
+
+    if session.messages < 8:
+        return False
+
+    if session.messages >= 15:
+        return True
+
+    if intel_score >= 8:
+        return True
+
+    return False
+
+
+# =====================================================
+# EVIDENCE
 # =====================================================
 
 def evidence_score(i:Intelligence):
 
     score=(
-        3*len(i.bankAccounts)+
-        3*len(i.upiIds)+
-        2*len(i.phishingLinks)+
-        2*len(i.phoneNumbers)
+        len(i.bankAccounts)*0.35+
+        len(i.upiIds)*0.35+
+        len(i.phoneNumbers)*0.15+
+        len(i.phishingLinks)*0.15
     )
 
-    return min(score/10,1.0)
+    return round(min(score,0.95),2)
 
+
+# =====================================================
+# CALLBACK
+# =====================================================
 
 def send_callback(session):
 
@@ -345,26 +291,14 @@ def send_callback(session):
         "scamDetected":True,
         "totalMessagesExchanged":session.messages,
         "extractedIntelligence":asdict(session.intelligence),
-        "agentNotes":f"Adaptive profiling used. Evidence confidence {evidence_score(session.intelligence):.2f}"
+        "agentNotes":f"Scam confidence: {evidence_score(session.intelligence)}"
     }
-
-    logger.info("FINAL CALLBACK ↓")
-    logger.info(json.dumps(payload,indent=2))
 
     for attempt in range(3):
         try:
-            response=requests.post(
-                CALLBACK_URL,
-                json=payload,
-                timeout=8
-            )
-
-            if response.status_code==200:
-                logger.info(f"Callback success (attempt {attempt+1})")
+            r=requests.post(CALLBACK_URL,json=payload,timeout=8)
+            if r.status_code==200:
                 break
-            else:
-                logger.warning(f"Callback failed: {response.status_code}")
-
         except Exception:
             logger.error(traceback.format_exc())
 
@@ -384,61 +318,21 @@ def get_session(sid):
         return session_store[sid]
 
 
-def should_end(session):
-
-    intel_count=sum(len(v) for v in asdict(session.intelligence).values())
-
-    return intel_count>=4 or session.messages>=12
-
-
 # =====================================================
 # ROUTES
 # =====================================================
 
-@app.after_request
-def cors(r):
-    r.headers['Access-Control-Allow-Origin']='*'
-    r.headers['Access-Control-Allow-Headers']='Content-Type,x-api-key'
-    r.headers['Access-Control-Allow-Methods']='GET,POST,OPTIONS'
-    return r
-
-
-@app.errorhandler(Exception)
-def handle_error(e):
-    logger.error(traceback.format_exc())
-    return jsonify({
-        "status":"error",
-        "message":"Internal server error"
-    }),500
-
-
 @app.route("/health")
 def health():
-    return jsonify({
-        "status":"healthy",
-        "llm_available":bool(GROQ_API_KEY)
-    })
+    return jsonify({"status":"healthy"})
 
 
-@app.route("/stats")
-@require_api_key
-def stats():
-
-    total={}
-
-    for s in session_store.values():
-        for k,v in asdict(s.intelligence).items():
-            total[k]=total.get(k,0)+len(v)
-
-    return jsonify({
-        "active_sessions":len(session_store),
-        "total_intelligence":total
-    })
-
-
-@app.route("/honeypot",methods=["POST","OPTIONS"])
+@app.route("/honeypot",methods=["GET","POST","OPTIONS"])
 @require_api_key
 def honeypot():
+
+    if request.method=="GET":
+        return jsonify({"status":"active","service":"AEGIS Honeypot"})
 
     if request.method=="OPTIONS":
         return make_response("",204)
@@ -449,58 +343,44 @@ def honeypot():
         return jsonify({"status":"error","message":"Invalid JSON"}),400
 
     sid=data.get("sessionId")
-    message=data.get("message",{})
-    text=message.get("text","").strip()
+    text=data.get("message",{}).get("text","").strip()
 
-    if not sid:
-        return jsonify({"status":"error","message":"Missing sessionId"}),400
-
-    if not text:
-        return jsonify({"status":"error","message":"Empty message"}),400
-
-    history=data.get("conversationHistory",[])
+    if not sid or not text:
+        return jsonify({"status":"error","message":"Missing fields"}),400
 
     session=get_session(sid)
-    session.messages+=1
 
-    logger.info(f"Session {sid} | Message #{session.messages}")
-    logger.info(f"Incoming: {text[:80]}")
+    # dedup guard
+    if text in session.seen_messages:
+        return jsonify({"status":"success","reply":"Please provide new details for verification."})
+
+    session.seen_messages.add(text)
+    session.messages+=1
 
     regex=Extractor.extract(text)
 
     is_scam=Detector.detect(text,regex)
 
-    if session.messages<=3:
+    if session.messages<=5:
         is_scam=True
 
-    if is_scam and not session.scam_detected:
+    if is_scam:
         session.scam_detected=True
-        session.scam_type=Profiler.classify(text)
-        logger.info(f"Scam classified as: {session.scam_type}")
 
-    if not session.scam_detected:
-        return jsonify({
-            "status":"success",
-            "reply":"Could you clarify what this is about?"
-        })
-
-    reply,llm_intel=agent_reply(text,history,session,regex)
-
-    session.intelligence=merge(
-        session.intelligence,
-        regex,
-        llm_intel
+    reply,llm_intel=agent_reply(
+        text,
+        data.get("conversationHistory",[]),
+        session,
+        regex
     )
+
+    session.intelligence=merge(session.intelligence,regex,llm_intel)
 
     if should_end(session):
         send_callback(session)
 
-    return jsonify({
-        "status":"success",
-        "reply":reply
-    })
+    return jsonify({"status":"success","reply":reply})
 
 
 if __name__=="__main__":
-    logger.info("🚀 AEGIS AI Honeypot Running")
     app.run(host="0.0.0.0",port=PORT)
