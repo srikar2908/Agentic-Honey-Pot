@@ -16,6 +16,13 @@ from flask import Flask, request, jsonify, make_response
 from groq import Groq
 import requests
 
+# Load environment variables from .env file (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, will use system env vars
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -220,7 +227,8 @@ Examples: "I'm worried, what should I do?", "Which bank?", "Can you explain?"""
         """
         
         if not groq_client:
-            logger.warning("Groq client not available, using fallback")
+            logger.warning("⚠️ Groq client not available, using fallback")
+            logger.warning("⚠️ Please set GROQ_API_KEY environment variable for LLM responses")
             return cls._fallback_process(text, regex_intel)
         
         # Build compact conversation context
@@ -248,6 +256,7 @@ Extract ADDITIONAL intelligence. Return ONLY valid JSON."""
         messages.append({"role": "user", "content": instruction})
         
         try:
+            logger.info("🤖 Calling LLM for analysis...")
             completion = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
@@ -257,18 +266,26 @@ Extract ADDITIONAL intelligence. Return ONLY valid JSON."""
             )
             
             response_text = completion.choices[0].message.content.strip()
+            logger.info(f"📥 LLM raw response: {response_text[:100]}...")
+            
             result = json.loads(response_text)
             
             is_scam = result.get('is_scam', False)
             agent_reply = result.get('reply', "I'm not sure I understand.")
             llm_intel = result.get('intelligence', {})
             
-            logger.info(f"LLM Response: is_scam={is_scam}, reply={agent_reply[:50]}...")
+            logger.info(f"✅ LLM Response: is_scam={is_scam}, reply={agent_reply[:50]}...")
             
             return is_scam, agent_reply, llm_intel
             
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ JSON parsing error: {e}")
+            logger.error(f"Raw response was: {response_text if 'response_text' in locals() else 'N/A'}")
+            return cls._fallback_process(text, regex_intel)
         except Exception as e:
-            logger.error(f"LLM processing error: {e}")
+            logger.error(f"❌ LLM processing error: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return cls._fallback_process(text, regex_intel)
     
     @classmethod
@@ -276,18 +293,25 @@ Extract ADDITIONAL intelligence. Return ONLY valid JSON."""
         """Fallback when LLM is unavailable"""
         import random
         
+        logger.warning("⚠️ Using FALLBACK responses (LLM unavailable)")
+        
         # Simple heuristic scam detection
         text_lower = text.lower()
         scam_words = ['urgent', 'blocked', 'verify', 'otp', 'suspend', 'expire']
         is_scam = sum(1 for word in scam_words if word in text_lower) >= 2
         
-        # Random fallback responses
+        # More varied fallback responses matching elderly persona
         fallbacks = [
-            "Oh no, I'm really worried. What should I do?",
-            "I don't understand. Can you explain more?",
-            "Is this urgent? How do I fix this?",
-            "Can you help me? I'm confused.",
-            "What exactly do I need to do?"
+            "Oh my, this sounds serious. What exactly happened to my account?",
+            "I'm very worried now. Can you tell me what I need to do?",
+            "I don't really understand these technical things. Could you explain it simply?",
+            "My son usually helps me with the bank. Is this very urgent?",
+            "I'm scared. Is my money safe? What should I do to fix this?",
+            "Sorry, I'm not good with computers. Can you help me step by step?",
+            "Oh dear, I didn't know there was a problem. How do I verify this?",
+            "This is confusing for me. Which bank are you calling from?",
+            "I'm an old person, please be patient. What information do you need?",
+            "My daughter handles these things usually. Is it very urgent that I do it now?"
         ]
         reply = random.choice(fallbacks)
         
