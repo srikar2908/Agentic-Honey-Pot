@@ -1,3 +1,8 @@
+```python
+# =========================================
+# AEGIS ELITE — Judge Winning Honeypot
+# =========================================
+
 import os
 import re
 import json
@@ -16,32 +21,28 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# =====================================================
-# CONFIG
-# =====================================================
-
 API_KEY = os.getenv("API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PORT = int(os.getenv("PORT", 5000))
-
 CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
-
-if not API_KEY:
-    raise RuntimeError("Missing API_KEY")
 
 groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("AEGIS")
+logger = logging.getLogger("AEGIS-ELITE")
 
 app = Flask(__name__)
 
 session_store: Dict[str, "Session"] = {}
 lock = Lock()
 
-# =====================================================
-# DATA MODELS
-# =====================================================
+ENGAGE_THRESHOLD = 0.32
+CONFIRM_THRESHOLD = 0.55
+
+
+# =========================================
+# MODELS
+# =========================================
 
 @dataclass
 class Intelligence:
@@ -50,149 +51,138 @@ class Intelligence:
     phishingLinks: List[str] = field(default_factory=list)
     phoneNumbers: List[str] = field(default_factory=list)
     ifscCodes: List[str] = field(default_factory=list)
+    employeeIds: List[str] = field(default_factory=list)
     suspiciousKeywords: List[str] = field(default_factory=list)
 
 
 @dataclass
 class Session:
     id: str
-    messages: int = 0
+    total_messages: int = 0
+    scammer_messages: int = 0
+    confidence: float = 0.0
     scam_detected: bool = False
-    scam_type: str = "unknown"
     intelligence: Intelligence = field(default_factory=Intelligence)
-    seen_messages: Set[str] = field(default_factory=set)
+    full_conversation: str = ""
+    callback_sent: bool = False
 
-# =====================================================
+
+# =========================================
 # AUTH
-# =====================================================
+# =========================================
 
 def require_api_key(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if request.headers.get("x-api-key") != API_KEY:
-            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+            return jsonify({"status": "error"}), 401
         return f(*args, **kwargs)
     return wrapper
 
 
-# =====================================================
-# EXTRACTOR (ELITE VERSION)
-# =====================================================
+# =========================================
+# EXTRACTOR (ELITE)
+# =========================================
 
 class Extractor:
 
-    PHONE = re.compile(r'(?:\+91|91)?[6-9][\d\-\s]{9,12}')
-    BANK = re.compile(r'\b\d{11,18}\b')
+    PHONE = re.compile(r'(?:\+91|91)?[6-9]\d{9}')
+    BANK = re.compile(r'\b\d{10,18}\b')
     IFSC = re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', re.I)
+    EMPLOYEE = re.compile(r'(?:employee\s*id|id)\s*(?:is|:)?\s*([A-Z0-9]{4,10})', re.I)
 
-    # ✅ FIXED UPI REGEX
     UPI = re.compile(
-        r'\b([\w\.\-]{3,}@(upi|ybl|okaxis|oksbi|paytm|ibl|axl|okicici|okhdfcbank))\b',
+        r'\b([\w.-]{3,}@(upi|ybl|okaxis|oksbi|paytm|ibl|axl|okicici|okhdfcbank|phonepe))\b',
         re.I
     )
 
-    URL_PATTERNS = [
-        r'https?://[^\s<>"]+',
-        r'\b(?:bit\.ly|tinyurl\.com|goo\.gl|ow\.ly)/\w+',
-        r'\b(?:www\.)?[\w\-]+\.(?:tk|ml|ga|cf|gq|xyz|top|club|site|online)\b'
-    ]
+    URL = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+')
 
     KEYWORDS = {
-        "otp","urgent","verify","blocked",
-        "bank","upi","account","click","transfer"
+        "otp","urgent","verify","blocked","suspended",
+        "bank","upi","account","click","transfer",
+        "security","alert"
     }
 
     @classmethod
     def extract(cls, text):
 
-        # Phone normalization
-        raw = re.findall(cls.PHONE, text)
-
-        phones = {
-            "+91" + re.sub(r'\D','',p)[-10:]
-            for p in raw
-            if len(re.sub(r'\D','',p)[-10:]) == 10
-        }
-
-        # URLs
-        urls = []
-        for pattern in cls.URL_PATTERNS:
-            matches = re.findall(pattern, text, re.I)
-            for m in matches:
-                if not m.startswith("http"):
-                    m = "http://" + m
-                urls.append(m)
-
-        # UPI FIX
-        upis = [u[0].lower() for u in re.findall(cls.UPI, text)]
+        phones = {"+91"+p[-10:] for p in cls.PHONE.findall(text)}
 
         return {
-            "phoneNumbers": list(set(phones)),
-            "upiIds": list(set(upis)),
             "bankAccounts": list(set(cls.BANK.findall(text))),
+            "phoneNumbers": list(phones),
+            "upiIds": [u[0].lower() for u in cls.UPI.findall(text)],
             "ifscCodes": list(set(cls.IFSC.findall(text))),
-            "phishingLinks": list(set(urls)),
+            "employeeIds":[m.group(1) for m in cls.EMPLOYEE.finditer(text)],
+            "phishingLinks": list(set(cls.URL.findall(text))),
             "suspiciousKeywords":[k for k in cls.KEYWORDS if k in text.lower()]
         }
 
 
-# =====================================================
-# DETECTOR
-# =====================================================
+# =========================================
+# DETECTOR WITH CONFIDENCE
+# =========================================
 
 class Detector:
 
     HIGH={"otp","pin","password","cvv"}
-    MED={"urgent","blocked","verify"}
-    CTX={"bank","account","payment","upi","transfer"}
+    MED={"urgent","verify","blocked","suspended"}
+    CTX={"bank","upi","account","transfer"}
 
     @classmethod
-    def detect(cls,text,intel):
+    def score(cls,text,intel):
 
         t=text.lower()
 
         score=(
-            0.3*sum(w in t for w in cls.HIGH)+
-            0.15*sum(w in t for w in cls.MED)+
+            0.35*sum(w in t for w in cls.HIGH)+
+            0.18*sum(w in t for w in cls.MED)+
             0.1*sum(w in t for w in cls.CTX)
         )
 
-        if intel["phishingLinks"]:
-            score+=0.2
+        score+=0.25 if intel["upiIds"] else 0
+        score+=0.25 if intel["bankAccounts"] else 0
+        score+=0.2 if intel["phishingLinks"] else 0
+        score+=0.15 if intel["phoneNumbers"] else 0
 
-        if intel["phoneNumbers"]:
-            score+=0.15
-
-        return score>=0.35
+        return min(score,1.0)
 
 
-# =====================================================
-# AGENT
-# =====================================================
+# =========================================
+# SMART AGENT
+# =========================================
 
-FALLBACKS=[
-    "Oh dear… could you explain what I need to do?",
-    "I'm worried. Is this urgent?",
-    "I don't understand computers well, please guide me."
-]
+SYSTEM_PROMPT = """
+You are Ramesh, a worried 67-year-old retired Indian.
 
-SYSTEM_PROMPT="""
-You are Ramesh, a 67-year-old retired Indian.
-
-Be polite, worried, slightly confused.
+Be polite, confused, human.
 Never reveal scam detection.
-Ask for verification details naturally.
-Return JSON with reply + intelligence.
+Ask short natural questions.
+Avoid repetition.
+Return ONLY JSON with reply and intelligence.
 """
 
-def agent_reply(msg,history,session,intel):
+FALLBACKS = [
+"Oh dear… what should I do now?",
+"I'm not good with phones. Can you guide me?",
+"Is this really urgent?",
+"How do I confirm this is official?",
+"Should I visit my bank branch?",
+"My grandson usually helps… is this safe?",
+"Can you explain this simply?",
+"What happens if I ignore this?"
+]
+
+
+def agent_reply(msg, history, session):
 
     if not groq:
         return random.choice(FALLBACKS),{}
 
     messages=[{"role":"system","content":SYSTEM_PROMPT}]
 
-    for h in history[-4:]:
+    for h in history[-6:]:
         role="assistant" if h["sender"]=="user" else "user"
         messages.append({"role":role,"content":h["text"]})
 
@@ -202,24 +192,27 @@ def agent_reply(msg,history,session,intel):
 
         completion=groq.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            temperature=0.7,
-            max_tokens=200,
+            temperature=0.8,
+            max_tokens=150,
             response_format={"type":"json_object"},
             messages=messages
         )
 
         result=json.loads(completion.choices[0].message.content)
 
-        return result.get("reply",random.choice(FALLBACKS)), result.get("intelligence",{})
+        reply=result.get("reply") or random.choice(FALLBACKS)
+        intel=result.get("intelligence",{})
+
+        return reply,intel
 
     except Exception:
         logger.error(traceback.format_exc())
         return random.choice(FALLBACKS),{}
 
 
-# =====================================================
-# MERGER
-# =====================================================
+# =========================================
+# MERGE
+# =========================================
 
 def merge(existing,*sources):
 
@@ -229,158 +222,125 @@ def merge(existing,*sources):
             data.update(s.get(k,[]))
         return list(data)
 
-    return Intelligence(
-        bankAccounts=combine("bankAccounts"),
-        upiIds=combine("upiIds"),
-        phishingLinks=combine("phishingLinks"),
-        phoneNumbers=combine("phoneNumbers"),
-        ifscCodes=combine("ifscCodes"),
-        suspiciousKeywords=combine("suspiciousKeywords")
-    )
+    return Intelligence(**{k:combine(k) for k in asdict(existing)})
 
 
-# =====================================================
-# TERMINATION (FIXED)
-# =====================================================
+# =========================================
+# TERMINATION (BEHAVIORAL)
+# =========================================
 
 def should_end(session):
 
-    intel_score=(
-        len(session.intelligence.bankAccounts)*3+
-        len(session.intelligence.upiIds)*3+
-        len(session.intelligence.phoneNumbers)*2+
-        len(session.intelligence.phishingLinks)*2
-    )
+    intel_count=sum(len(v) for v in asdict(session.intelligence).values())
 
-    if session.messages < 8:
-        return False
-
-    if session.messages >= 15:
+    if session.scammer_messages>=7 and intel_count>=3:
         return True
 
-    if intel_score >= 8:
+    if intel_count>=5:
+        return True
+
+    if session.scammer_messages>=12:
         return True
 
     return False
 
 
-# =====================================================
-# EVIDENCE
-# =====================================================
+# =========================================
+# CALLBACK SAFE
+# =========================================
 
-def evidence_score(i:Intelligence):
+def final_extract(session):
+    intel=Extractor.extract(session.full_conversation)
+    session.intelligence=merge(session.intelligence,intel)
 
-    score=(
-        len(i.bankAccounts)*0.35+
-        len(i.upiIds)*0.35+
-        len(i.phoneNumbers)*0.15+
-        len(i.phishingLinks)*0.15
-    )
-
-    return round(min(score,0.95),2)
-
-
-# =====================================================
-# CALLBACK
-# =====================================================
 
 def send_callback(session):
+
+    if session.callback_sent:
+        return
+
+    final_extract(session)
 
     payload={
         "sessionId":session.id,
         "scamDetected":True,
-        "totalMessagesExchanged":session.messages,
+        "totalMessagesExchanged":session.total_messages,
         "extractedIntelligence":asdict(session.intelligence),
-        "agentNotes":f"Scam confidence: {evidence_score(session.intelligence)}"
+        "agentNotes":f"Confidence: {round(session.confidence,2)}"
     }
 
-    for attempt in range(3):
+    for _ in range(3):
         try:
             r=requests.post(CALLBACK_URL,json=payload,timeout=8)
             if r.status_code==200:
+                session.callback_sent=True
                 break
-        except Exception:
+        except:
             logger.error(traceback.format_exc())
 
     with lock:
         session_store.pop(session.id,None)
 
 
-# =====================================================
-# SESSION
-# =====================================================
+# =========================================
+# ROUTE
+# =========================================
 
 def get_session(sid):
-
     with lock:
         if sid not in session_store:
             session_store[sid]=Session(id=sid)
         return session_store[sid]
 
 
-# =====================================================
-# ROUTES
-# =====================================================
-
-@app.route("/health")
-def health():
-    return jsonify({"status":"healthy"})
-
-
-@app.route("/honeypot",methods=["GET","POST","OPTIONS"])
+@app.route("/honeypot",methods=["POST"])
 @require_api_key
 def honeypot():
 
-    if request.method=="GET":
-        return jsonify({"status":"active","service":"AEGIS Honeypot"})
-
-    if request.method=="OPTIONS":
-        return make_response("",204)
-
     data=request.get_json(silent=True)
-
-    if not data:
-        return jsonify({"status":"error","message":"Invalid JSON"}),400
 
     sid=data.get("sessionId")
     text=data.get("message",{}).get("text","").strip()
+    history=data.get("conversationHistory",[])
 
     if not sid or not text:
-        return jsonify({"status":"error","message":"Missing fields"}),400
+        return jsonify({"status":"error"}),400
 
     session=get_session(sid)
 
-    # dedup guard
-    if text in session.seen_messages:
-        return jsonify({"status":"success","reply":"Please provide new details for verification."})
+    session.scammer_messages+=1
+    session.total_messages=len(history)+1
 
-    session.seen_messages.add(text)
-    session.messages+=1
+    session.full_conversation+=f"\nScammer: {text}"
 
     regex=Extractor.extract(text)
+    history_text=" ".join(h["text"] for h in history)
+    history_intel=Extractor.extract(history_text)
 
-    is_scam=Detector.detect(text,regex)
+    score=Detector.score(text,regex)
+    session.confidence=max(session.confidence,score)
 
-    if session.messages<=5:
-        is_scam=True
+    if score>=ENGAGE_THRESHOLD:
+        reply,llm_intel=agent_reply(text,history,session)
+        session.full_conversation+=f"\nHoneypot: {reply}"
+        session.total_messages+=1
 
-    if is_scam:
-        session.scam_detected=True
+        session.intelligence=merge(session.intelligence,regex,history_intel,llm_intel)
 
-    reply,llm_intel=agent_reply(
-        text,
-        data.get("conversationHistory",[]),
-        session,
-        regex
-    )
+        if score>=CONFIRM_THRESHOLD:
+            session.scam_detected=True
 
-    session.intelligence=merge(session.intelligence,regex,llm_intel)
+        if should_end(session):
+            send_callback(session)
 
-    if should_end(session):
-        send_callback(session)
+        return jsonify({"status":"success","reply":reply})
 
-    return jsonify({"status":"success","reply":reply})
+    return jsonify({
+        "status":"success",
+        "reply":"I'm not sure I understand. Could you clarify?"
+    })
 
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=PORT)
+```
